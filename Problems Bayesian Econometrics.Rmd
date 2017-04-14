@@ -1,0 +1,151 @@
+---
+title: "Problems Bayesian Econometrics"
+author: "Christoph Bodner"
+output:
+  html_notebook: default
+  html_document: default
+---
+
+## Problem 1
+Using your favorite software, reproduce Section 3 of [1] numerically when X has n and Y has m categories (choose m, n > 2 to your liking). 
+
+Investigate: How does the choice of $p_i$, $i \in \{1, \dots , m \times n\}$ influence the speed of convergence? Can you manage to find values for $\{p_i\}$ that define a joint distribution but “break” the Gibbs sampler?
+
+---
+
+For ease of notation, we take n = m = 3. 
+
+We know that:
+
+$$P(X_k' = x_1 | X_0' = x_0) = A_{X|X}^k$$
+with $A_{X|X}^k$ given by:
+
+$$A_{X|X} = 
+\underbrace{\begin{pmatrix}
+  \frac{p_{1,1}}{\sum_i p_{i,1}} & \frac{p_{2,1}}{\sum_i p_{i,1}} & \frac{p_{3,1}}{\sum_i p_{i,1}} \\
+  \frac{p_{1,2}}{\sum_i p_{i,2}} & \frac{p_{2,2}}{\sum_i p_{i,2}} & \frac{p_{3,2}}{\sum_i p_{i,2}} \\
+  \frac{p_{1,3}}{\sum_i p_{i,3}} & \frac{p_{2,3}}{\sum_i p_{i,3}} & \frac{p_{3,3}}{\sum_i p_{i,3}}
+ \end{pmatrix}}_{=A_{Y|X}}
+ \times
+ \underbrace{\begin{pmatrix}
+  \frac{p_{1,1}}{\sum_i p_{1,i}} & \frac{p_{1,2}}{\sum_i p_{1,i}} & \frac{p_{1,3}}{\sum_i p_{1,i}} \\
+  \frac{p_{2,1}}{\sum_i p_{2,i}} & \frac{p_{2,2}}{\sum_i p_{2,i}} & \frac{p_{2,3}}{\sum_i p_{2,i}} \\
+  \frac{p_{3,1}}{\sum_i p_{3,i}} & \frac{p_{3,2}}{\sum_i p_{3,i}} & \frac{p_{3,3}}{\sum_i p_{3,i}}
+ \end{pmatrix}}_{=A_{X|Y}}$$
+
+Let's define the following conditional distributions:
+$$P(X=x|Y=y) =
+  \begin{cases}
+   p_1 = 0.2, ~p_2 = 0.2,~ p_3 = 0.6 & \text{if } y = 1 \\
+   p_1 = 0.4, ~p_2 = 0.4, ~p_3 = 0.2 & \text{if } y = 2 \\
+   p_1 = 0.6, ~p_2 = 0.2, ~p_3 = 0.2 & \text{if } y = 3 \\
+  \end{cases}$$
+
+and $P(Y|X) = P(Y) = (1/3, 1/3, 1/3)$, i.e. Y does not depend on X.
+
+Since $P(X) = \mathbb{E}(P(X=x|Y=y))$ we get $P(X) =$ `r paste( round(c((0.2+0.4+0.6)/3, (0.2+0.4+0.2)/3, (0.6+0.2+0.2)/3),2))`.
+
+This is the distribution we should arrive at, when we let $k \to \infty$ and calculate $f_0 A_{X|X}^k = f_k \to (0.4, 0.27, 0.33)$
+
+The matrices $A_{Y|X}$ and $A_{X|Y}$ are given by:
+```{r}
+A_xy = matrix(c(0.2, 0.2, 0.6,
+                0.4, 0.4, 0.2,
+                0.6, 0.2, 0.2
+              ),
+              nrow = 3, byrow = 1
+              )
+
+
+A_yx = matrix(c(1/3, 1/3, 1/3,
+                1/3, 1/3, 1/3,
+                1/3, 1/3, 1/3
+                ),
+              nrow = 3, byrow = 1
+              )
+
+A_xx = A_yx %*% A_xy
+```
+
+As we will see, in our particular case, we will converge to the correct solution after one step already, because Y does not depend on X and hence we can extract the marginal distribution of X immediately.
+
+```{r}
+A_xx
+```
+
+```{r}
+A_xx %*% A_xx
+```
+The choice of the joint distribution $p_i$ has therefore a huge influence on the speed of convergence: 
+
+* Immediated convergence
+* Convergence at some speed and 
+* No convergence 
+
+are all possible depending on the distribution specified.
+
+Next, we will show an example where convergence takes more than one step:
+Define 
+$$P(X=x|Y=y) =
+  \begin{cases}
+   p_1 = 0.2, ~p_2 = 0.2,~ p_3 = 0.6 & \text{if } y = 1 \\
+   p_1 = 0.4, ~p_2 = 0.4, ~p_3 = 0.2 & \text{if } y = 2 \\
+   p_1 = 0.6, ~p_2 = 0.2, ~p_3 = 0.2 & \text{if } y = 3 \\
+  \end{cases}$$
+
+as before and let 
+$$P(Y=y|X=x) =
+  \begin{cases}
+   p_1 = 0.2, ~p_2 = 0.2,~ p_3 = 0.6 & \text{if } x = 1 \\
+   p_1 = 0.4, ~p_2 = 0.4, ~p_3 = 0.2 & \text{if } x = 2 \\
+   p_1 = 0.6, ~p_2 = 0.2, ~p_3 = 0.2 & \text{if } x = 3 \\
+  \end{cases}$$
+We get for the transition matrix $A_{X|X}$:
+```{r}
+A_xy = A_xy
+A_yx = A_xy
+
+A_xx = A_yx %*% A_xy
+
+A_xx
+```
+```{r}
+A_xx %*% A_xx
+```
+```{r}
+new = A_xx
+old = 0
+i = 0
+while (sum(abs(new-old))>0.001 & i <= 10){
+  old = new
+  new = old %*% A_xx
+  i = i+1
+}
+print(paste("Converged after", i, "iterations"))
+
+if(abs(sum(new)/3-1)<0.001) TRUE
+```
+And last, but not least, we show an example when this method will not converge:
+
+An easy way to achieve that is to make sure that the sequence gets 'stuck' at some point and cannot explore the whole space:
+```{r}
+A_xy = matrix(c(0, 0, 1,
+                0, 1, 0,
+                1, 0, 0
+              ),
+              nrow = 3, byrow = 1
+              )
+
+
+A_yx = matrix(c(0, 0, 1,
+                0, 1, 0,
+                1, 0, 0
+                ),
+              nrow = 3, byrow = 1
+              )
+
+A_xx = A_yx %*% A_xy
+
+A_xx
+```
+Since we have the indentity matrix in this particular case, this sequence will not move from its starting value at all and thus can only 'converge' if we happen to pick the correct starting values by chance. This setting corresponds to a joint distribution with 1/3 on the diagonal and 0s elsewhere.
