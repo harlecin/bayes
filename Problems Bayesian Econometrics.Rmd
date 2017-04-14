@@ -123,7 +123,9 @@ while (sum(abs(new-old))>0.001 & i <= 10){
 }
 print(paste("Converged after", i, "iterations"))
 
-if(abs(sum(new)/3-1)<0.001) TRUE
+print(paste("Is a density: " ,if(abs(sum(new)/3-1)<0.001) TRUE))
+
+new
 ```
 And last, but not least, we show an example when this method will not converge:
 
@@ -149,3 +151,88 @@ A_xx = A_yx %*% A_xy
 A_xx
 ```
 Since we have the indentity matrix in this particular case, this sequence will not move from its starting value at all and thus can only 'converge' if we happen to pick the correct starting values by chance. This setting corresponds to a joint distribution with 1/3 on the diagonal and 0s elsewhere.
+
+## Problem 2
+Implement a naive Gibbs sampler for Example 2 of [1] with $B = /infty$. Show numerically that the Gibbs sampler fails to converge by investigating a few trace plots of the (log of the) draws.
+
+---
+
+Suppose we have two conditional densities given by:
+$$\begin{align*}
+f(x|y) &= y e^{-yx}, ~~0<x<\infty \\
+f(y|x) &= x e^{-xy}, ~~0<y<\infty \\
+\end{align*}$$
+
+We can implement a Gibbs sampler as follows:
+```{r}
+# No. of Gibbs steps
+k = 10000
+
+x = rep(1, k)
+y = rep(1, k)
+
+set.seed(1234)
+
+for (i in 2:k){
+  x[i] = rexp(1, rate = y[i-1])
+  y[i] = rexp(1, rate = x[i-1])
+}
+
+gibbs_sequence = data.frame(x, y, iter = 1:k)
+
+library(ggplot2)
+ggplot(gibbs_sequence) +
+  geom_line(aes(x = iter, y = log(x)), col = "red") +
+  geom_line(aes(x = iter, y = log(y))) +
+  ylab("log(y) - black and log(x) - red") +
+  ggtitle("Series do not converge",
+          "Conditional distributions do not define proper joint distribution")
+```
+
+## Problem 3
+Implement a Gibbs sampler for Example 2 of [1] with $B << \infty$ and use rejection sampling for the conditional draws in each Gibbs step.
+
+### a
+The simplest way to do this is to keep drawing from the unrestricted conditional exponential distribution until you obtain a draw that falls within [0,B]. Take a minute to verify that this actually constitutes a proper rejection sampling step with probability of success in {0,1} (thus, the "coin flip"" can be omitted). Count the number of "rejects"" and time your procedure. What happens if B approaches zero? What happens if B gets large?
+
+### b
+Now, use a uniform distribution u on [0,B] as your proposal distribution. Take a minute to verify that the density of the target distribution $p(x|y) = C + ye−xy\mathbb{1}_{[0,B]}$ with $C = e^{−By}/B$. Consequently, a constant M such that $Mu(x) \geq p(x|y) \forall x \in \mathbb{R}_+$ is given by $M = By + e^{−By}$. The same logic applies for $p(y|x)$. Count the number of "rejects" and time your procedure. What happens if B approaches zero? What happens if B gets large?
+
+Verify the equivalence of both methods by comparing the draws obtained. Furthermore, plot the number of "rejects" of both methods as a function of B.
+
+---
+
+The conditional densities are given by:
+$$\begin{align*}
+f(x|y) &\propto y e^{-yx}, ~~0<x<B<<\infty \\
+f(y|x) &\propto x e^{-xy}, ~~0<y<B<<\infty \\
+\end{align*}$$
+
+The restriction to $(0, B)$ ensures that the marginals exist.
+
+Let's start with (a):
+```{r}
+# No. of Gibbs steps
+k = 10000
+
+B = 2
+x = rep(3, k)
+y = rep(3, k)
+x_rej = 0
+y_rej = 0
+set.seed(1234)
+
+for (i in 2:k){
+  while(x[i] > B) {
+      x_rej = x_rej + 1
+      x[i] = rexp(1, rate = y[i-1])
+  }
+  while(y[i] > B) {
+      y_rej = y_rej + 1
+      y[i] = rexp(1, rate = x[i-1])
+  }
+}
+
+# remove starting value >B
+gibbs_sequence = data.frame(x = x[-1], y = y[-1], iter = 1:(k-1))   
+```
