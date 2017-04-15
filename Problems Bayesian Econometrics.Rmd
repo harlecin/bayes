@@ -210,29 +210,58 @@ f(y|x) &\propto x e^{-xy}, ~~0<y<B<<\infty \\
 
 The restriction to $(0, B)$ ensures that the marginals exist.
 
-Let's start with (a):
+Let's start with (a). We use rejection sampling, meaning we sample from the full distribution and discard all elements that are not in the acceptance region. The lower the treshold, the higher the probability that we will draw an element that is not acceptable and needs to be rejected. The probability of all possible points in the acceptance region is increased proportionally by the probability of hitting the rejection region.
 ```{r}
-# No. of Gibbs steps
-k = 10000
-
-B = 2
-x = rep(3, k)
-y = rep(3, k)
-x_rej = 0
-y_rej = 0
-set.seed(1234)
-
-for (i in 2:k){
-  while(x[i] > B) {
-      x_rej = x_rej + 1
-      x[i] = rexp(1, rate = y[i-1])
+gibbs_rejection = function(B, k){
+  start = Sys.time()
+  x = rep(B+1, k)
+  y = rep(B+1, k)
+  x_rej = 0
+  y_rej = 0
+  set.seed(1234)
+  
+  for (i in 2:k){
+    while(x[i] > B) {
+        x_rej = x_rej + 1
+        x[i] = rexp(1, rate = y[i-1])
+    }
+    while(y[i] > B) {
+        y_rej = y_rej + 1
+        y[i] = rexp(1, rate = x[i-1])
+    }
   }
-  while(y[i] > B) {
-      y_rej = y_rej + 1
-      y[i] = rexp(1, rate = x[i-1])
-  }
+  stop = Sys.time()
+  # remove starting value >B
+  gibbs_sequence = data.frame(x = x[-1], y = y[-1], iter = 1:(k-1))
+    
+  results = tibble::tibble(data = list(gibbs_sequence), 
+                 x_rej = x_rej, y_rej = y_rej, 
+                 time = stop - start)
+
+  return(results)
 }
-
-# remove starting value >B
-gibbs_sequence = data.frame(x = x[-1], y = y[-1], iter = 1:(k-1))   
 ```
+
+The results of the algorithm are as follows:
+```{r}
+temp = NULL
+for (i in c(0.1, 1:8, 100)) {
+  temp = rbind(temp, cbind(i, gibbs_rejection(B = i, 1000)))
+}
+temp
+```
+
+The table shows that the lower the treshold B, the higher the rate of rejection and consequently, the sampler needs to run longer before it draws an appropriate sample.
+
+We can also see that clearly in the following plot:
+```{r}
+ggplot(temp) +
+  geom_line(aes(x = 1:10, y = log(as.numeric(time)))) +
+  geom_smooth(aes(x = 1:10, y = log(as.numeric(time))), method = "loess") +
+  ylab("log(time in sec)") + xlab("treshold (B)") +
+  ggtitle("Run-time Gibbs sampler with rejection sampling",
+          "Lower rejection treshold increases runtime")
+```
+
+
+
