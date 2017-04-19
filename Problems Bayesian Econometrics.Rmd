@@ -5,6 +5,9 @@ output:
   html_notebook: default
   html_document: default
 ---
+```{r setup, include=0, echo=0}
+library(dplyr)
+```
 
 ## Problem 1
 Using your favorite software, reproduce Section 3 of [1] numerically when X has n and Y has m categories (choose m, n > 2 to your liking). 
@@ -185,8 +188,8 @@ ggplot(gibbs_sequence) +
   geom_line(aes(x = iter, y = log(x)), col = "red") +
   geom_line(aes(x = iter, y = log(y))) +
   ylab("log(y) - black and log(x) - red") +
-  ggtitle("Series do not converge",
-          "Conditional distributions do not define proper joint distribution")
+  ggtitle("Traceplots",
+          "Individual sequences x (red) and y (black) do not converge")
 ```
 
 ## Problem 3
@@ -194,11 +197,6 @@ Implement a Gibbs sampler for Example 2 of [1] with $B << \infty$ and use reject
 
 ### a
 The simplest way to do this is to keep drawing from the unrestricted conditional exponential distribution until you obtain a draw that falls within [0,B]. Take a minute to verify that this actually constitutes a proper rejection sampling step with probability of success in {0,1} (thus, the "coin flip"" can be omitted). Count the number of "rejects"" and time your procedure. What happens if B approaches zero? What happens if B gets large?
-
-### b
-Now, use a uniform distribution u on [0,B] as your proposal distribution. Take a minute to verify that the density of the target distribution $p(x|y) = C + ye−xy\mathbb{1}_{[0,B]}$ with $C = e^{−By}/B$. Consequently, a constant M such that $Mu(x) \geq p(x|y) \forall x \in \mathbb{R}_+$ is given by $M = By + e^{−By}$. The same logic applies for $p(y|x)$. Count the number of "rejects" and time your procedure. What happens if B approaches zero? What happens if B gets large?
-
-Verify the equivalence of both methods by comparing the draws obtained. Furthermore, plot the number of "rejects" of both methods as a function of B.
 
 ---
 
@@ -210,7 +208,12 @@ f(y|x) &\propto x e^{-xy}, ~~0<y<B<<\infty \\
 
 The restriction to $(0, B)$ ensures that the marginals exist.
 
-Let's start with (a). We use rejection sampling, meaning we sample from the full distribution and discard all elements that are not in the acceptance region. The lower the treshold, the higher the probability that we will draw an element that is not acceptable and needs to be rejected. The probability of all possible points in the acceptance region is increased proportionally by the probability of hitting the rejection region.
+We use rejection sampling, meaning we sample from the full distribution and discard all elements that are not in the acceptance region. 
+
+For rejection sampling to work, we need to find an enveloping density $g(x)$ that satisfies $f(x) \leq cg(x)$ for our target density $f(x)$ (here the truncated exponential distribution) for some constant $c$. Setting $c=1$ and $g(x)$ to the unrestricted exponential distribution fulfills both conditions. Since the distributions are exactly the same over the acceptance region and the target is 0 on the rejection region, we can simply accept all draws in the target region and reject all others.
+
+The lower the treshold B, the higher the probability that we will draw an element that is not acceptable and needs to be rejected. So we expect this method to work well the larger B gets and badly the closer B gets to 0 since it takes longer and longer to obtain a draw that is not rejected.
+
 ```{r}
 gibbs_rejection = function(B, k){
   start = Sys.time()
@@ -244,24 +247,141 @@ gibbs_rejection = function(B, k){
 
 The results of the algorithm are as follows:
 ```{r}
-temp = NULL
-for (i in c(0.1, 1:8, 100)) {
-  temp = rbind(temp, cbind(i, gibbs_rejection(B = i, 1000)))
+if(FALSE){
+    gibbs_exp = NULL
+  for (i in c(0.1, 1:8, 100)) {
+    gibbs_exp = rbind(gibbs_exp, cbind(i, gibbs_rejection(B = i, 1000)))
+  }
+  gibbs_exp
+  save(gibbs_exp, file = "gibbs_exp.Rdata")
+} else {
+  load("gibbs_exp.Rdata")
 }
-temp
+
 ```
 
 The table shows that the lower the treshold B, the higher the rate of rejection and consequently, the sampler needs to run longer before it draws an appropriate sample.
 
 We can also see that clearly in the following plot:
 ```{r}
-ggplot(temp) +
-  geom_line(aes(x = 1:10, y = log(as.numeric(time)))) +
-  geom_smooth(aes(x = 1:10, y = log(as.numeric(time))), method = "loess") +
-  ylab("log(time in sec)") + xlab("treshold (B)") +
-  ggtitle("Run-time Gibbs sampler with rejection sampling",
-          "Lower rejection treshold increases runtime")
+gibbs_exp %>%
+  filter(i <100) %>%
+  ggplot(.) +
+    geom_line(aes(x = i, y = log(as.numeric(time)))) +
+    geom_smooth(aes(x = i, y = log(as.numeric(time))), method = "loess") +
+    ylab("log(time in sec)") + xlab("treshold (B)") +
+    ggtitle("Run-time Gibbs sampler with A/R sampling exponential",
+            "Lower rejection treshold increases runtime")
 ```
 
+### b
+Now, use a uniform distribution u on [0,B] as your proposal distribution. Take a minute to verify that the density of the target distribution $p(x|y) = C ye^{−xy}\mathbb{1}_{[0,B]}$ with $C = e^{−By}/B$. Consequently, a constant M such that $Mu(x) \geq p(x|y) \forall x \in \mathbb{R}_+$ is given by $M = By/(1-e^{−By})$. The same logic applies for $p(y|x)$. Count the number of "rejects" and time your procedure. What happens if B approaches zero? What happens if B gets large?
 
+Verify the equivalence of both methods by comparing the draws obtained. Furthermore, plot the number of "rejects" of both methods as a function of B.
 
+---
+
+Before we can use the uniform distribution we need to find a constant $M$ so that $Mu(x) \geq p(x|y) \forall x \in \mathbb{R}_+$. Since the exponential distribution declines monotonically as $x \to \infty$ we know that if we find M s.t. $Mu(x) \geq f(0|y)$ we are good to go. The truncated exponential distribution has a density given by:
+$$f(x|y) = y e^{-yx}\mathbb{1}_{[0,B]}$$
+We get that:
+$$f(0|y) = \frac{y}{1-e^{-yB}}$$
+Since a uniform distribution on $[0,B]$ has height $1/B$ we get that $M$ needs to satisfy:
+$$M \frac{1}{B} \geq \frac{y}{1-e^{-yB}}$$
+So $M = \frac{yB}{1-e^{-yB}}$ is sufficient for our purposes.
+
+Now, let's implement a Gibbs sampler with rejection sampling based on a uniform distribution. We proceed in three steps:
+
+1. Sample a point on the x-axis of our proposal distribution (here a uniform one)
+2. Sample a point uniformly starting from the point we drew in 1. upwards till we hit the proposal distribution
+3. If the point is below our target distribution (here truncated exponential) we except it, else we draw again
+
+```{r}
+gibbs_rejection_unif = function(B, k){
+  start = Sys.time()
+  x = rep(B+1, k)
+  y = rep(B+1, k)
+  x_rej = 0
+  y_rej = 0
+  set.seed(1234)
+
+  for (i in 2:k){
+    x_accept = FALSE
+    while(!x_accept) {
+        x_rej = x_rej + 1
+        ## sample a point from proposal distribution
+        x[i] = runif(1, min = 0, max = B)
+        ## sample a point uniformly upwards between [0, M/B]
+        x_check = runif(1, 0, y[i-1]*B/(1 - exp(-y[i-1]*B))) 
+        ## check if this point is below our target density at point x[i]
+        x_accept = x_check <= y[i-1]*exp(-y[i-1]*x[i])
+    }
+    y_accept = FALSE
+    while(!y_accept) {
+        y_rej = y_rej + 1
+        y[i] = runif(1, min = 0, max = B)
+        y_check = runif(1, 0, x[i-1]*B/(1 - exp(-x[i-1]*B))) 
+        y_accept = y_check <= x[i-1]*exp(-x[i-1]*y[i])
+    }
+  }
+  stop = Sys.time()
+  # remove starting value >B
+  gibbs_sequence = data.frame(x = x[-1], y = y[-1], iter = 1:(k-1))
+    
+  results = tibble::tibble(data = list(gibbs_sequence), 
+                 x_rej = x_rej, y_rej = y_rej, 
+                 time = stop - start)
+
+  return(results)
+}
+```
+
+Running the algorithm for the same set of values as before gives us:
+```{r}
+if (FALSE) {
+  gibbs_unif = NULL
+  for (i in c(0.01, 0.1, 1:8)) {
+    gibbs_unif = rbind(gibbs_unif, cbind(i, gibbs_rejection_unif(B = i, 1000)))
+  }
+  gibbs_unif
+  save(gibbs_unif, file = "gibbs_unif.Rdata")
+} else {
+  load("gibbs_unif.Rdata")
+  gibbs_unif
+}
+
+```
+
+This paragraph was written while waiting for the sampler to finish (after drinking coffee, reading an article in the newspaper and some other stuff. In the end I stopped the sampler and set max(i) = 8). The problem with using the uniform distribution is that as B becomes larger and larger, we need more and more draws to find a value we do not reject. Choosing a 'bad' proposal distribution can have a huge impact on run-time. However, for small values of B the uniform distribution is quite handy, because we only sample on the restricted support of the truncated exponential and not on $\mathbb{R}_+$
+
+```{r}
+ggplot(gibbs_unif) +
+  geom_line(aes(x = i, y = log(as.numeric(time)))) +
+  geom_smooth(aes(x = i, y = log(as.numeric(time))), method = "loess") +
+  ylab("log(time in sec)") + xlab("treshold (B)") +
+  ggtitle("Run-time Gibbs sampler with A/R sampling uniform",
+          "Lower rejection treshold decreases runtime up to a certain point")
+```
+
+Comparing runtime of both algorithms gives us:
+```{r}
+gibbs_exp$gibbs = "gibbs_exp"
+gibbs_unif$gibbs = "gibbs_unif"
+gibbs_compare = rbind(gibbs_exp, gibbs_unif) %>%
+  filter(i %in% c(0.1, 1:8))
+
+ggplot(gibbs_compare) +
+    geom_line(aes(x = i, y = log(as.numeric(time)), color = gibbs)) +
+    ylab("log(time in sec)") + xlab("treshold (B)") +
+    ggtitle("Run-time A/R uniform vs. exponential proposal distribution",
+          "Uniform performs better for lower B, exponential for larger B") +
+  theme(legend.position="bottom")
+```
+
+Do both methods actually give us the same distribution or did we make a mistake? We are going to check one example using a qqplot:
+```{r}
+x_gibbs_exp = gibbs_exp$data[[2]]$x
+x_gibbs_unif = gibbs_unif$data[[3]]$x
+qqplot(x_gibbs_exp, x_gibbs_unif, xlab = "Gibbs with exponential for B = 1", ylab = "Gibbs with uniform for B = 1")
+```
+That looks pretty promising. It seems like we did a good job or twice the same bad one (at least for B = 1:)
+Comparing the sum of the ordered pair-wise differences gives `r round(sum(sort(x_gibbs_exp) - sort(x_gibbs_unif)),2)` so the draws are as close as the plot suggests.
