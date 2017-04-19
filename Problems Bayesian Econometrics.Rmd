@@ -178,7 +178,8 @@ set.seed(1234)
 
 for (i in 2:k){
   x[i] = rexp(1, rate = y[i-1])
-  y[i] = rexp(1, rate = x[i-1])
+  ## Note that y[i] already uses the x[i] generated before and NOT x[i-1]
+  y[i] = rexp(1, rate = x[i])
 }
 
 gibbs_sequence = data.frame(x, y, iter = 1:k)
@@ -217,24 +218,28 @@ The lower the treshold B, the higher the probability that we will draw an elemen
 ```{r}
 gibbs_rejection = function(B, k){
   start = Sys.time()
-  x = rep(B+1, k)
-  y = rep(B+1, k)
+  x = rep(B, k)
+  y = rep(B, k)
   x_rej = 0
   y_rej = 0
   set.seed(1234)
   
   for (i in 2:k){
-    while(x[i] > B) {
+    x_accept = FALSE
+    while(!x_accept) {
         x_rej = x_rej + 1
         x[i] = rexp(1, rate = y[i-1])
+        x_accept = x[i] <= B
     }
-    while(y[i] > B) {
+    y_accept = FALSE
+    while(!y_accept) {
         y_rej = y_rej + 1
-        y[i] = rexp(1, rate = x[i-1])
+        y[i] = rexp(1, rate = x[i])
+        y_accept = y[i] <= B
     }
   }
   stop = Sys.time()
-  # remove starting value >B
+  # remove starting value =B
   gibbs_sequence = data.frame(x = x[-1], y = y[-1], iter = 1:(k-1))
     
   results = tibble::tibble(data = list(gibbs_sequence), 
@@ -252,13 +257,34 @@ if(FALSE){
   for (i in c(0.1, 1:8, 100)) {
     gibbs_exp = rbind(gibbs_exp, cbind(i, gibbs_rejection(B = i, 1000)))
   }
-  gibbs_exp
   save(gibbs_exp, file = "gibbs_exp.Rdata")
 } else {
   load("gibbs_exp.Rdata")
 }
 
+gibbs_exp
 ```
+
+First, let's take a look at the simulated densities:
+```{r}
+trace_exp = gibbs_exp$data[[6]]
+trace_exp_melted = tidyr::gather(trace_exp, var, value, 1:2)
+
+ggplot(trace_exp_melted) +
+  geom_density(aes(x = value)) +
+  facet_grid(var ~ . ) +
+  ggtitle(paste0("Estimated densities (B = ",gibbs_exp$i[6],")"))
+```
+
+The true marginal distribution is given by:
+$$f(x) = \frac{(1-e^{-Bx})/x}{log(B^2)+\Gamma(0,B^2) + \gamma}$$
+So the shape of the marginal should roughly look like this (omitting the $\Gamma$ and $\gamma$ terms since they are positive constants that simply increase the denominator):
+```{r}
+temp_x = seq(from = 0.01, to = 5, by = 0.01)
+plot(density((1-exp(-5*temp_x))/temp_x/(log(5^2))), main = "Approximate f(x)")
+```
+
+This suggests that our sampler is actually giving to much weight to large values.
 
 The table shows that the lower the treshold B, the higher the rate of rejection and consequently, the sampler needs to run longer before it draws an appropriate sample.
 
@@ -298,8 +324,8 @@ Now, let's implement a Gibbs sampler with rejection sampling based on a uniform 
 ```{r}
 gibbs_rejection_unif = function(B, k){
   start = Sys.time()
-  x = rep(B+1, k)
-  y = rep(B+1, k)
+  x = rep(B, k)
+  y = rep(B, k)
   x_rej = 0
   y_rej = 0
   set.seed(1234)
@@ -319,12 +345,12 @@ gibbs_rejection_unif = function(B, k){
     while(!y_accept) {
         y_rej = y_rej + 1
         y[i] = runif(1, min = 0, max = B)
-        y_check = runif(1, 0, x[i-1]*B/(1 - exp(-x[i-1]*B))) 
-        y_accept = y_check <= x[i-1]*exp(-x[i-1]*y[i])
+        y_check = runif(1, 0, x[i]*B/(1 - exp(-x[i]*B))) 
+        y_accept = y_check <= x[i]*exp(-x[i]*y[i])
     }
   }
   stop = Sys.time()
-  # remove starting value >B
+  # remove starting value =B
   gibbs_sequence = data.frame(x = x[-1], y = y[-1], iter = 1:(k-1))
     
   results = tibble::tibble(data = list(gibbs_sequence), 
@@ -337,18 +363,18 @@ gibbs_rejection_unif = function(B, k){
 
 Running the algorithm for the same set of values as before gives us:
 ```{r}
-if (FALSE) {
+if (TRUE) {
   gibbs_unif = NULL
   for (i in c(0.01, 0.1, 1:8)) {
     gibbs_unif = rbind(gibbs_unif, cbind(i, gibbs_rejection_unif(B = i, 1000)))
   }
-  gibbs_unif
   save(gibbs_unif, file = "gibbs_unif.Rdata")
 } else {
   load("gibbs_unif.Rdata")
   gibbs_unif
 }
 
+gibbs_unif
 ```
 
 This paragraph was written while waiting for the sampler to finish (after drinking coffee, reading an article in the newspaper and some other stuff. In the end I stopped the sampler and set max(i) = 8). The problem with using the uniform distribution is that as B becomes larger and larger, we need more and more draws to find a value we do not reject. Choosing a 'bad' proposal distribution can have a huge impact on run-time. However, for small values of B the uniform distribution is quite handy, because we only sample on the restricted support of the truncated exponential and not on $\mathbb{R}_+$
@@ -385,3 +411,19 @@ qqplot(x_gibbs_exp, x_gibbs_unif, xlab = "Gibbs with exponential for B = 1", yla
 ```
 That looks pretty promising. It seems like we did a good job or twice the same bad one (at least for B = 1:)
 Comparing the sum of the ordered pair-wise differences gives `r round(sum(sort(x_gibbs_exp) - sort(x_gibbs_unif)),2)` so the draws are as close as the plot suggests.
+
+## Problem 4
+Implement a Gibbs sampler for Example 2 of [1] with $B << \infty$ and use a Metropolis sampler for the conditional draws in each Gibbs step (sometimes this is called Metropolis-within-Gibbs).
+
+### a
+Consider a symmetric random walk proposal with uniform innovations $J(\theta^*|theta^{(s)} = Unif(\theta^{(s)} - \delta, \theta^{(s)} + \delta)$
+
+---
+
+We are again given two truncated exponential distributions to model our conditional distributions:
+$$\begin{align*}
+f(x|y) &\propto y e^{-yx}, ~~0<x<B<<\infty \\
+f(y|x) &\propto x e^{-xy}, ~~0<y<B<<\infty \\
+\end{align*}$$
+
+
