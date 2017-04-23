@@ -7,6 +7,7 @@ output:
 ---
 ```{r setup, include=0, echo=0}
 library(dplyr)
+library(ggplot2)
 ```
 
 ## Problem 1
@@ -172,7 +173,7 @@ We can implement a Gibbs sampler as follows:
 k = 10000
 
 x = rep(1, k)
-y = rep(1, k)
+y = rep(2, k)
 
 set.seed(1234)
 
@@ -188,9 +189,9 @@ library(ggplot2)
 ggplot(gibbs_sequence) +
   geom_line(aes(x = iter, y = log(x)), col = "red") +
   geom_line(aes(x = iter, y = log(y))) +
-  ylab("log(y) - black and log(x) - red") +
+  ylab("log(.)") +
   ggtitle("Traceplots",
-          "Individual sequences x (red) and y (black) do not converge")
+          "Individual sequences x (red) and y (black) do not seem to converge to stable distribution")
 ```
 
 ## Problem 3
@@ -239,7 +240,7 @@ gibbs_rejection = function(B, k){
     }
   }
   stop = Sys.time()
-  # remove starting value =B
+  # remove starting value = B
   gibbs_sequence = data.frame(x = x[-1], y = y[-1], iter = 1:(k-1))
     
   results = tibble::tibble(data = list(gibbs_sequence), 
@@ -253,7 +254,7 @@ gibbs_rejection = function(B, k){
 The results of the algorithm are as follows:
 ```{r}
 if(FALSE){
-    gibbs_exp = NULL
+  gibbs_exp = NULL
   for (i in c(0.1, 1:8, 100)) {
     gibbs_exp = rbind(gibbs_exp, cbind(i, gibbs_rejection(B = i, 1000)))
   }
@@ -267,26 +268,44 @@ gibbs_exp
 
 First, let's take a look at the simulated densities:
 ```{r}
+B = 5
+
 trace_exp = gibbs_exp$data[[6]]
+trace_exp = trace_exp 
+
+trace_exp = trace_exp %>%
+  rowwise() %>%
+  mutate(x_dens = mean(1/(1-exp(-B*.$y))*.$y*exp(-x*.$y)),
+         y_dens = mean(1/(1-exp(-B*.$x))*.$x*exp(-y*.$x))
+         )
+  
 trace_exp_melted = tidyr::gather(trace_exp, var, value, 1:2)
 
-ggplot(trace_exp_melted) +
-  geom_density(aes(x = value)) +
+ggplot(trace_exp_melted, aes(x = value, y=0.1*..density..)) +
+  geom_histogram(binwidth=0.1, boundary = 0) +
+  geom_line(data = filter(trace_exp_melted, var == "y"), aes(x = value, y = y_dens*0.1), col = "red", alpha = 0.5) +
+  geom_line(data = filter(trace_exp_melted, var == "x"), aes(x = value, y = x_dens*0.1), col = "red", alpha = 0.5) +
   facet_grid(var ~ . ) +
-  ggtitle(paste0("Estimated densities (B = ",gibbs_exp$i[6],")"))
+  ylab("frequency (density x bin width)") + xlab("simulated value") +
+  ggtitle("Estimated marginal densities scaled by bin width",
+          paste0("B = ", gibbs_exp$i[6]," and chain length = 1000")
+          )
 ```
+
+**Note:** ggplot histograms are by default centered around 0. In our case we have to set `boundary = 0` otherwise the histogram will decrease at bin 0 since half the values are from below 0.
 
 The true marginal distribution is given by:
 $$f(x) = \frac{(1-e^{-Bx})/x}{log(B^2)+\Gamma(0,B^2) + \gamma}$$
 So the shape of the marginal should roughly look like this (omitting the $\Gamma$ and $\gamma$ terms since they are positive constants that simply increase the denominator):
 ```{r}
 temp_x = seq(from = 0.01, to = 5, by = 0.01)
-plot(density((1-exp(-5*temp_x))/temp_x/(log(5^2))), main = "Approximate f(x)")
+plot(1:500/100, ((1-exp(-5*temp_x))/temp_x/(log(5^2)))*0.1, type = "l", 
+     main = "Approximate analytic f(x)", ylab = "frequency", xlab = "simulated values")
 ```
 
-This suggests that our sampler is actually giving to much weight to large values.
+Looks pretty similar to what we got before, so it seems we did a good job:)
 
-The table shows that the lower the treshold B, the higher the rate of rejection and consequently, the sampler needs to run longer before it draws an appropriate sample.
+Now let's investigate the performance of the algorithm. The table above shows that the lower the treshold B, the higher the rate of rejection and consequently, the sampler needs to run longer before it draws an appropriate sample.
 
 We can also see that clearly in the following plot:
 ```{r}
@@ -308,8 +327,9 @@ Verify the equivalence of both methods by comparing the draws obtained. Furtherm
 ---
 
 Before we can use the uniform distribution we need to find a constant $M$ so that $Mu(x) \geq p(x|y) \forall x \in \mathbb{R}_+$. Since the exponential distribution declines monotonically as $x \to \infty$ we know that if we find M s.t. $Mu(x) \geq f(0|y)$ we are good to go. The truncated exponential distribution has a density given by:
-$$f(x|y) = y e^{-yx}\mathbb{1}_{[0,B]}$$
-We get that:
+$$f(x|y) = y e^{-yx}\mathbb{1}_{[0,B]} \frac{1}{1-e^{-By}}$$
+which is the density of the exponential distribution rescaled by the probability of $X \leq B$. So we get that:
+
 $$f(0|y) = \frac{y}{1-e^{-yB}}$$
 Since a uniform distribution on $[0,B]$ has height $1/B$ we get that $M$ needs to satisfy:
 $$M \frac{1}{B} \geq \frac{y}{1-e^{-yB}}$$
@@ -361,9 +381,9 @@ gibbs_rejection_unif = function(B, k){
 }
 ```
 
-Running the algorithm for the same set of values as before gives us:
+Running the algorithm gives us:
 ```{r}
-if (TRUE) {
+if (FALSE) {
   gibbs_unif = NULL
   for (i in c(0.01, 0.1, 1:8)) {
     gibbs_unif = rbind(gibbs_unif, cbind(i, gibbs_rejection_unif(B = i, 1000)))
@@ -371,7 +391,6 @@ if (TRUE) {
   save(gibbs_unif, file = "gibbs_unif.Rdata")
 } else {
   load("gibbs_unif.Rdata")
-  gibbs_unif
 }
 
 gibbs_unif
@@ -409,14 +428,14 @@ x_gibbs_exp = gibbs_exp$data[[2]]$x
 x_gibbs_unif = gibbs_unif$data[[3]]$x
 qqplot(x_gibbs_exp, x_gibbs_unif, xlab = "Gibbs with exponential for B = 1", ylab = "Gibbs with uniform for B = 1")
 ```
-That looks pretty promising. It seems like we did a good job or twice the same bad one (at least for B = 1:)
+That looks pretty promising. It seems like we did a good job or twice the same bad one:)
 Comparing the sum of the ordered pair-wise differences gives `r round(sum(sort(x_gibbs_exp) - sort(x_gibbs_unif)),2)` so the draws are as close as the plot suggests.
 
 ## Problem 4
 Implement a Gibbs sampler for Example 2 of [1] with $B << \infty$ and use a Metropolis sampler for the conditional draws in each Gibbs step (sometimes this is called Metropolis-within-Gibbs).
 
 ### a
-Consider a symmetric random walk proposal with uniform innovations $J(\theta^*|theta^{(s)} = Unif(\theta^{(s)} - \delta, \theta^{(s)} + \delta)$
+Consider a symmetric random walk proposal with uniform innovations $J(\theta^*|theta^{(s)}) = Unif(\theta^{(s)} - \delta, \theta^{(s)} + \delta)$
 
 ---
 
@@ -426,4 +445,98 @@ f(x|y) &\propto y e^{-yx}, ~~0<x<B<<\infty \\
 f(y|x) &\propto x e^{-xy}, ~~0<y<B<<\infty \\
 \end{align*}$$
 
+The Metropolis sampler works as follows:
+
+Suppose we are at position $\theta^{(s)}$, then:
+
+1. Generate a proposal for a move to $\theta^*$ with probability $J(\theta^*|\theta^{(s)})$
+2. Calculate the acceptance ratio $R = min(1, r)$: $$r = \frac{f(\theta^*|y)}{f(\theta^{(s)}|y)} = \frac{f(y|\theta^*)f(\theta^*)}{f(y|\theta^{(s)})f(\theta^{(s)})}$$ where in our case $f(.|.)$ as defined above
+3. The next draw is given by
+$$\theta^{(s+1)} =
+  \begin{cases}
+  \theta^* & \text{ with probability R}\\
+  \theta^{(s)} & \text{ with probability 1-R}\\
+\end{cases}$$
+
+
+```{r}
+B = 3
+k = 1000
+
+x = rep(B, k)
+y = rep(B, k)
+delta = 0.1
+
+p = function(theta) {
+  dexp()  
+}
+
+for (i in 2:k) {
+  x_proposal = runif(1, min = x[i-1] - delta, max = x[i-1] + delta)
+  log_r = dexp(x_proposal, rate = y[i-1], log = 1) - dexp(x[i-1], rate = y[i-1], log = 1)
+  accept = log(runif(1, 0, 1)) < log_r
+  x[i] = if (accept) x_proposal else x[i-1]
+
+  y_proposal = runif(1, min = y[i-1] - delta, max = y[i-1] + delta)
+  log_r = dexp(y_proposal, rate = x[i-1], log = 1) - dexp(y[i-1], rate = x[i-1], log = 1)
+  accept = log(runif(1, 0, 1)) < log_r
+  y[i] = if (accept) y_proposal else y[i-1] 
+}
+
+
+## Werden die Proposals in Abhängigkeit von allen Parametern gesampelt?
+```
+
+
+
+
+
+
+## Problem 6
+### a
+```{r}
+mu_hat_rolling = function(data, start_at = 10) {
+  start_at = max(start_at, 2)
+  sapply(tail(seq_along(data), -start_at+1), function(n) {mean(data[1:n])})
+}
+
+sigma2_hat_rolling = function(data, start_at = 10) {
+  start_at = max(start_at, 2)
+  sapply(tail(seq_along(data), -start_at+1), function(n) { 1/(n-1)*sum( (data[1:n] - mean(data[1:n]))^2 ) })
+}
+
+var_rolling = function(data, alpha = 0.05, start_at = 10) {
+  start_at = max(start_at, 2)
+  var_alpha = qnorm(p = alpha, mean = mu_hat_rolling(data, start_at), sd = sqrt(sigma2_hat_rolling(data, start_at)))
+  exceeded = tail(data, -start_at) < head(var_alpha, -1)
+  exceeded
+}
+```
+
+```{r}
+mu = 0
+sigma2 = 1
+alpha = 0.05
+set.seed(12345)
+
+data.sim = rnorm(111, mu, sqrt(sigma2))
+
+sum(var_rolling(data.sim, alpha = 0.05, start_at = 10))/(length(data.sim) - 10)
+```
+
+### b
+```{r}
+if (FALSE) {
+  exceeded_sim = replicate(10000, sum(var_rolling(rnorm(111, mu, sqrt(sigma2)), 
+                                                  alpha = 0.05, start_at = 10))/(length(data.sim) - 10))
+  saveRDS(exceeded_sim, file = "exceeded_sim.Rds")
+} else {
+  exceeded_sim = readRDS(file = "exceeded_sim.Rds")
+}
+
+mean(exceeded_sim)
+```
+```{r}
+hist(exceeded_sim)
+```
 
