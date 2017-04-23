@@ -8,6 +8,7 @@ output:
 ```{r setup, include=0, echo=0}
 library(dplyr)
 library(ggplot2)
+library(ggthemes)
 ```
 
 ## Problem 1
@@ -191,7 +192,8 @@ ggplot(gibbs_sequence) +
   geom_line(aes(x = iter, y = log(y))) +
   ylab("log(.)") +
   ggtitle("Traceplots",
-          "Individual sequences x (red) and y (black) do not seem to converge to stable distribution")
+          "Individual sequences x (red) and y (black) do not seem to converge to stable distribution") +
+  theme_hc()
 ```
 
 ## Problem 3
@@ -289,10 +291,13 @@ ggplot(trace_exp_melted, aes(x = value, y=0.1*..density..)) +
   ylab("frequency (density x bin width)") + xlab("simulated value") +
   ggtitle("Estimated marginal densities scaled by bin width",
           paste0("B = ", gibbs_exp$i[6]," and chain length = 1000")
-          )
+          ) +
+  theme_few()
 ```
 
 **Note:** ggplot histograms are by default centered around 0. In our case we have to set `boundary = 0` otherwise the histogram will decrease at bin 0 since half the values are from below 0.
+
+The red lines are the estimated densities using $f(x) = \mathbb{E}[f(x|y)] = \int f(x|y)f(y) dy$. As can be seen from the graphs, this way of estimating seems to perform better. The reason for that is that this estimator incorporates more information for any given point.
 
 The true marginal distribution is given by:
 $$f(x) = \frac{(1-e^{-Bx})/x}{log(B^2)+\Gamma(0,B^2) + \gamma}$$
@@ -316,7 +321,8 @@ gibbs_exp %>%
     geom_smooth(aes(x = i, y = log(as.numeric(time))), method = "loess") +
     ylab("log(time in sec)") + xlab("treshold (B)") +
     ggtitle("Run-time Gibbs sampler with A/R sampling exponential",
-            "Lower rejection treshold increases runtime")
+            "Lower rejection treshold increases runtime") +
+    theme_hc()
 ```
 
 ### b
@@ -404,10 +410,11 @@ ggplot(gibbs_unif) +
   geom_smooth(aes(x = i, y = log(as.numeric(time))), method = "loess") +
   ylab("log(time in sec)") + xlab("treshold (B)") +
   ggtitle("Run-time Gibbs sampler with A/R sampling uniform",
-          "Lower rejection treshold decreases runtime up to a certain point")
+          "Lower rejection treshold decreases runtime up to a certain point") +
+  theme_hc()
 ```
 
-Comparing runtime of both algorithms gives us:
+Comparing runtimes of both algorithms gives us:
 ```{r}
 gibbs_exp$gibbs = "gibbs_exp"
 gibbs_unif$gibbs = "gibbs_unif"
@@ -419,7 +426,8 @@ ggplot(gibbs_compare) +
     ylab("log(time in sec)") + xlab("treshold (B)") +
     ggtitle("Run-time A/R uniform vs. exponential proposal distribution",
           "Uniform performs better for lower B, exponential for larger B") +
-  theme(legend.position="bottom")
+  theme(legend.position="bottom") +
+  theme_hc()
 ```
 
 Do both methods actually give us the same distribution or did we make a mistake? We are going to check one example using a qqplot:
@@ -450,7 +458,7 @@ The Metropolis sampler works as follows:
 Suppose we are at position $\theta^{(s)}$, then:
 
 1. Generate a proposal for a move to $\theta^*$ with probability $J(\theta^*|\theta^{(s)})$
-2. Calculate the acceptance ratio $R = min(1, r)$: $$r = \frac{f(\theta^*|y)}{f(\theta^{(s)}|y)} = \frac{f(y|\theta^*)f(\theta^*)}{f(y|\theta^{(s)})f(\theta^{(s)})}$$ where in our case $f(.|.)$ as defined above
+2. Calculate the acceptance ratio $R = min(1, r)$: $$r = \frac{f(\theta^*|y)}{f(\theta^{(s)}|y)} = \frac{f(y|\theta^*)f(\theta^*)}{f(y|\theta^{(s)})f(\theta^{(s)})}$$ 
 3. The next draw is given by
 $$\theta^{(s+1)} =
   \begin{cases}
@@ -460,37 +468,268 @@ $$\theta^{(s+1)} =
 
 
 ```{r}
-B = 3
-k = 1000
+metropolis_unif = function(B, k, delta = 0.3) {
+  x = rep(B, k)
+  y = rep(B, k)
+  x_temp = 3 
+  y_temp = 3
+  
+  p = function(x, rate, B) {
+    rate*exp(-rate*x) * 1/(1-exp(-B*rate)) * (x <= B) * (0 <= x)
+  }
+  set.seed(1)
+  for (i in 1:k) {
+    x_proposal = runif(1, min = x_temp - delta, max = x_temp + delta)
+    log_r = log(p(x_proposal, rate = y_temp, B)) - log(p(x_temp, rate = y_temp, B))
+    accept =  log(runif(1, 0, 1)) < log_r
+    x[i] = x_proposal * accept + x_temp * !accept
+    x_temp = x[i]
+  
+    y_proposal = runif(1, min = y_temp - delta, max = y_temp + delta)
+    log_r = log(p(y_proposal, rate = x_temp, B)) - log(p(y_temp, rate = x_temp, B))
+    accept =  log(runif(1, 0, 1)) < log_r
+    y[i] = y_proposal * accept + y_temp * !accept
+    y_temp = y[i]
+  }
+  
+  results = tibble::tibble(data = list(data.frame(x = x, y = y)),
+                   x_accept_rate = 100 * length(unique(x))/length(x),
+                   y_accept_rate = 100 * length(unique(y))/length(y)
+                   )
 
-x = rep(B, k)
-y = rep(B, k)
-delta = 0.1
-
-p = function(theta) {
-  dexp()  
+  return(results)
 }
-
-for (i in 2:k) {
-  x_proposal = runif(1, min = x[i-1] - delta, max = x[i-1] + delta)
-  log_r = dexp(x_proposal, rate = y[i-1], log = 1) - dexp(x[i-1], rate = y[i-1], log = 1)
-  accept = log(runif(1, 0, 1)) < log_r
-  x[i] = if (accept) x_proposal else x[i-1]
-
-  y_proposal = runif(1, min = y[i-1] - delta, max = y[i-1] + delta)
-  log_r = dexp(y_proposal, rate = x[i-1], log = 1) - dexp(y[i-1], rate = x[i-1], log = 1)
-  accept = log(runif(1, 0, 1)) < log_r
-  y[i] = if (accept) y_proposal else y[i-1] 
-}
-
-
+  
 ## Werden die Proposals in Abhängigkeit von allen Parametern gesampelt?
 ```
 
+Using this sampler gives us:
+```{r}
+res_unif = NULL
+  for (delta in seq(0.1, 0.5, by = 0.1)) {
+    res_unif = rbind(res_unif, cbind(delta, metropolis_unif(B = 5, k = 1000, delta)))
+  }
+res_unif
+```
+
+```{r}
+metropolis_norm = function(B, k, delta = 0.3) {
+  x = rep(B, k)
+  y = rep(B, k)
+  x_temp = 3 
+  y_temp = 3
+  
+  p = function(x, rate, B) {
+    rate*exp(-rate*x) * 1/(1-exp(-B*rate)) * (x <= B) * (0 <= x)
+  }
+  set.seed(1)
+  for (i in 1:k) {
+    x_proposal = rnorm(1, mean = x_temp, sqrt(delta))
+    log_r = log(p(x_proposal, rate = y_temp, B)) - log(p(x_temp, rate = y_temp, B))
+    accept =  log(runif(1, 0, 1)) < log_r
+    x[i] = x_proposal * accept + x_temp * !accept
+    x_temp = x[i]
+  
+    y_proposal = rnorm(1, mean = y_temp, sqrt(delta))
+    log_r = log(p(y_proposal, rate = x_temp, B)) - log(p(y_temp, rate = x_temp, B))
+    accept =  log(runif(1, 0, 1)) < log_r
+    y[i] = y_proposal * accept + y_temp * !accept
+    y_temp = y[i]
+  }
+  
+  results = tibble::tibble(data = list(data.frame(x = x, y = y)),
+                   x_accept_rate = 100 * length(unique(x))/length(x),
+                   y_accept_rate = 100 * length(unique(y))/length(y)
+                   )
+
+  return(results)
+}
+  
+```
+
+Using this sampler gives us:
+```{r}
+res_norm = NULL
+  for (delta in seq(0.1, 0.5, by = 0.1)) {
+    res_norm = rbind(res_norm, cbind(delta, metropolis_norm(B = 5, k = 1000, delta)))
+  }
+res_norm
+```
+
+Comparing with the results form the 'classic' Gibbs samplers from before we get:
+```{r}
+{
+par(mfrow = c(1,2))
+qqplot(res_unif$data[[1]]$x, gibbs_exp$data[[6]]$x, main = "Uniform with delta = 0.1")
+abline(a = 0, b = 1)
+qqplot(res_norm$data[[1]]$x, gibbs_exp$data[[6]]$x) 
+abline(a = 0, b = 1)
+}
+
+```
+
+Looking at the qqplots, it seems like the uniform Metropolis algorithm does not fit that well. The normal Metropolis one seems to perform better. The uniform Metropolis samples a lot of points in the range 1-3, but comparatively few around 4-5. 
+
+```{r}
+{
+par(mfrow = c(1,2))
+qqplot(res_unif$data[[5]]$x, gibbs_exp$data[[6]]$x)
+abline(a = 0, b = 1)
+qqplot(res_norm$data[[5]]$x, gibbs_exp$data[[6]]$x) 
+abline(a = 0, b = 1)
+}
+
+```
+When we increase delta, the normal proposal Metropolis performs about on par with the 'classic' Gibbs. The uniform proposal Metropolis shows an even worse performance.
+
+Let's take a look at the autocorrelation of the chains:
+```{r}
+{
+par(mfrow = c(1,3))
+acf(res_unif$data[[5]]$x, main = "Unif Metropolis")
+acf(res_norm$data[[5]]$x, main = "Norm Metropolis")
+acf(gibbs_exp$data[[6]]$x, main = "Classic Gibbs")
+}
+```
+Both Metropolis-within-Gibbs sampler show high degrees of autocorrelation compared to the 'classic' Gibbs sampler. So the sampler is likely to 'walk' in one direction for quite some time.
+
+Since our random variable is restricted to the interval [0,B] and small values are more likely, the sampler is likely to get stuck at values around 0. The acceptance rate of the Metropolis sampler is 1, if the posterior density of the new value is higher than that of the old one. Since the posterior is a truncated exponential, smaller values are less likely to be rejected. But depending on the size of delta, the closer we get to the lower boundary, the more likely it is that we 'overshoot' and draw a value outside of the support. Thus higher probability values are becoming less likely while at the same time it is harder to 'beat' the already quite high posterior to move to less likely values. 
 
 
+## Problem 5
+Implement a Gibbs sampler for Example 2 of [1] with $B << \infty$ and use an independence Metropolis-Hastings sampler for the conditional draws in each Gibbs step (sometimes this is called MH-within-Gibbs). To do so, consider an independence proposal, meaning that the proposed value does not depend on the current value. More specifically:
 
+## a
+Try a uniform proposal on $[0, B]$, i.e. $J(\theta^*|\theta^{(s)}) = J(\theta^*) = Unif(0, B)$. Take a minute to verify that the acceptance probabilities simplify to $min[1, p(x^*|y)/p(x^{(s)}|y)]$ and $min[1, p(y^*|x)/p(y^{(s)}|x)]$ respectively.
 
+---
+
+$$\begin{align*}
+P(accept) = P(u \leq r) = Unif(0,1) &\leq 
+\frac{f(x^*, y^{(s)})}{f(x^{(s)},y^{(s)})}\frac{J_x(x^{(s)}|x^*,y^{(s)})}{J_x(x^{*}|x^{(s)},y^{(s)})} \\
+& = \frac{f(x^*|y^{(s)})f(y^{(s)})}{f(x^{(s)}|y^{(s)})f(y^{(s)})}\underbrace{\frac{J_x(x^{(s)})}{J_x(x^{*})}}_{=1/B/1/B=1}
+\end{align*}$$
+
+So the acceptance probability is indeed $min[1, p(x^*|y)/p(x^{(s)}|y)]$ for the proposal $x^*$. The same logic applies to the proposal for y.
+
+```{r}
+mh_gibbs_ind_unif = function(B, k, delta = 0.3) {
+  x = rep(B, k)
+  y = rep(B, k)
+  x_temp = 3 
+  y_temp = 3
+  
+  p = function(x, rate, B) {
+    rate*exp(-rate*x) * 1/(1-exp(-B*rate)) * (x <= B) * (0 <= x)
+  }
+  set.seed(1)
+  for (i in 1:k) {
+    x_proposal = runif(1, 0, B)
+    log_r = log(p(x_proposal, rate = y_temp, B)) - log(p(x_temp, rate = y_temp, B))
+    accept =  log(runif(1, 0, 1)) < log_r
+    x[i] = x_proposal * accept + x_temp * !accept
+    x_temp = x[i]
+  
+    y_proposal = runif(1, 0, B)
+    log_r = log(p(y_proposal, rate = x_temp, B)) - log(p(y_temp, rate = x_temp, B))
+    accept =  log(runif(1, 0, 1)) < log_r
+    y[i] = y_proposal * accept + y_temp * !accept
+    y_temp = y[i]
+  }
+  
+  results = tibble::tibble(data = list(data.frame(x = x, y = y)),
+                   x_accept_rate = 100 * length(unique(x))/length(x),
+                   y_accept_rate = 100 * length(unique(y))/length(y)
+                   )
+
+  return(results)
+}
+  
+```
+
+Using this sampler gives us:
+```{r}
+res_ind_unif = NULL
+  for (b in c(0.01, 0.1, 1:8)) {
+    res_ind_unif = rbind(res_ind_unif, cbind(b, mh_gibbs_ind_unif(B = b, k = 1000)))
+  }
+res_ind_unif
+```
+
+### b
+Use the unrestricted conditional exponential distributions $q(x|y) = ye^{-yx}$ and $q(y|x) = xe^{-xy}$. Then the acceptance probabilities on [0,B] are given by:
+$$min\left\{1, \frac{p(x^*|y)q(x^{(s)}|y)}{p(x^{(s)}|y)q(x^{*}|y)} \right\}\text{   and   }
+min\left\{1, \frac{p(y^*|x)q(y^{(s)}|x)}{p(y^{(s)}|x)q(y^{*}|x)} \right\}$$
+
+```{r}
+mh_gibbs_exp = function(B, k, delta = 0.3) {
+  x = rep(B, k)
+  y = rep(B, k)
+  x_temp = 3 
+  y_temp = 3
+  
+  p = function(x, rate, B) {
+    rate*exp(-rate*x) * 1/(1-exp(-B*rate)) * (x <= B) * (0 <= x)
+  }
+  
+  set.seed(1)
+  for (i in 1:k) {
+    x_proposal = rexp(1, rate = y_temp)
+    log_r = (log(p(x_proposal, rate = y_temp, B)) + dexp(x_temp, rate = y_temp, log = 1)
+             - log(p(x_temp, rate = y_temp, B)) - dexp(x_proposal, rate = y_temp, log = 1))
+    accept =  log(runif(1, 0, 1)) < log_r
+    x[i] = x_proposal * accept + x_temp * !accept
+    x_temp = x[i]
+  
+    y_proposal = rexp(1, rate = x_temp)
+    log_r = (log(p(y_proposal, rate = x_temp, B)) + dexp(y_temp, rate = x_temp, log = 1)
+             - log(p(y_temp, rate = x_temp, B)) - dexp(y_proposal, rate = x_temp, log = 1))
+    accept =  log(runif(1, 0, 1)) < log_r
+    y[i] = y_proposal * accept + y_temp * !accept
+    y_temp = y[i]
+  }
+  
+  results = tibble::tibble(data = list(data.frame(x = x, y = y)),
+                   x_accept_rate = 100 * length(unique(x))/length(x),
+                   y_accept_rate = 100 * length(unique(y))/length(y)
+                   )
+
+  return(results)
+}
+  
+```
+
+Using this sampler gives us:
+```{r}
+res_mh_exp = NULL
+  for (b in c(0.01, 0.1, 1:8)) {
+    res_mh_exp = rbind(res_mh_exp, cbind(b, mh_gibbs_exp(B = b, k = 1000)))
+  }
+res_mh_exp
+```
+
+Let's check the equivalence of the two approaches for B = 5:
+```{r}
+{
+par(mfrow = c(1, 2)) 
+qqplot(res_ind_unif$data[[7]]$x, gibbs_exp$data[[6]]$x, xlab = "MH independent Unif", ylab = "Gibbs Exponential") 
+abline(0, 1)
+qqplot(res_mh_exp$data[[7]]$x, res_ind_unif$data[[7]]$x, xlab = "MH Exponential", ylab = "MH independent Unif") 
+abline(0, 1)
+}
+```
+Using B = 5 yields solid samples with both methods. The sample quantiles align pretty well with the plain Gibbs sampler. From the tables we can see that the independent uniform proposal has decreasing acceptance rates for increasing B while the exponential proposal leads to the reverse. 
+
+ACF plots give the following picture:
+```{r}
+{
+par(mfrow = c(1, 2)) 
+acf(res_ind_unif$data[[7]]$x, main = "MH independent Unif")
+acf(res_mh_exp$data[[7]]$x, main= "MH Exponential")
+}
+```
+
+The ACFs decay drastically more quickly than was the case with the vanilla Metropolis algorithm. 
 
 ## Problem 6
 ### a
