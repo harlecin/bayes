@@ -786,3 +786,45 @@ hist(exceeded_sim)
 ```
 
 ### c
+```{r}
+t_scaled = function(m, M, t, y, a, b, alpha) {
+  m_tick = (m+M*t*mean(y))/(M*t+1)
+  M_tick = M/(M*t+1)
+  a_tick = a + t/2
+  b_tick = b + 1/2*sum((y-mean(y))^2) + (t*(mean(y)-m)^2)/(2*(M*t + 1))
+  
+  ## sd or sd^2?
+  qt_scaled = metRology::qt.scaled(alpha, df = 2*a_tick, mean = m_tick, sd = sqrt(b_tick*(M_tick+1)/a_tick))
+  
+  qt_scaled
+}
+
+simulation = function(data.sim) {
+  var_rolling_qt = sapply(10:length(data.sim), 
+                          function(i) {t_scaled(m = 1, M = 1, t = i, data.sim[1:i], a = 1, b = 1, alpha = 0.05)})
+  
+  exceeded = tail(data.sim, -10) < head(var_rolling_qt, -1)
+
+  sum(exceeded)/length(exceeded)
+}
+```
+
+```{r}
+if (FALSE) {
+  exceeded_sim_qt = replicate(10000, simulation(rnorm(111, mu, sqrt(sigma2))))
+  saveRDS(exceeded_sim_qt, file = "exceeded_sim_qt.Rds")
+} else {
+  exceeded_sim_at = readRDS(file = "exceeded_sim_qt.Rds")
+}
+
+mean(exceeded_sim_qt)
+```
+```{r}
+hist(exceeded_sim_qt)
+```
+
+### d
+```{r}
+
+```
+
