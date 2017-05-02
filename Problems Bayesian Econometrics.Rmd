@@ -270,6 +270,14 @@ gibbs_exp
 
 First, let's take a look at the simulated densities:
 ```{r}
+ddist = function(x,B){
+  if(x >= 0 && x <= B){
+    pexp(x,B)/x/(log(B^2)+pgamma(0,B^2)*gamma(B^2)-digamma(1))
+  } else {
+    0
+  }
+}
+
 B = 5
 
 trace_exp = gibbs_exp$data[[6]]
@@ -278,7 +286,9 @@ trace_exp = trace_exp
 trace_exp = trace_exp %>%
   rowwise() %>%
   mutate(x_dens = mean(1/(1-exp(-B*.$y))*.$y*exp(-x*.$y)),
-         y_dens = mean(1/(1-exp(-B*.$x))*.$x*exp(-y*.$x))
+         y_dens = mean(1/(1-exp(-B*.$x))*.$x*exp(-y*.$x)),
+         x_ana = ddist(x, B = 5),
+         y_ana = ddist(y, B = 5)
          )
   
 trace_exp_melted = tidyr::gather(trace_exp, var, value, 1:2)
@@ -286,29 +296,24 @@ trace_exp_melted = tidyr::gather(trace_exp, var, value, 1:2)
 ggplot(trace_exp_melted, aes(x = value, y=0.1*..density..)) +
   geom_histogram(binwidth=0.1, boundary = 0) +
   geom_line(data = filter(trace_exp_melted, var == "y"), aes(x = value, y = y_dens*0.1), col = "red", alpha = 0.5) +
+  geom_line(data = filter(trace_exp_melted, var == "y"), aes(x = value, y = y_ana*0.1), linetype = "dotted", col = "blue") +
   geom_line(data = filter(trace_exp_melted, var == "x"), aes(x = value, y = x_dens*0.1), col = "red", alpha = 0.5) +
+  geom_line(data = filter(trace_exp_melted, var == "x"), aes(x = value, y = x_ana*0.1), linetype = "dotted", col = "blue") +
   facet_grid(var ~ . ) +
   ylab("frequency (density x bin width)") + xlab("simulated value") +
   ggtitle("Estimated marginal densities scaled by bin width",
-          paste0("B = ", gibbs_exp$i[6]," and chain length = 1000")
+          paste0("B = ", gibbs_exp$i[6]," and chain length = 1000 - estimated density (red) and analytic density (blue)")
           ) +
-  theme_few()
+  theme_light()
 ```
 
 **Note:** ggplot histograms are by default centered around 0. In our case we have to set `boundary = 0` otherwise the histogram will decrease at bin 0 since half the values are from below 0.
 
-The red lines are the estimated densities using $f(x) = \mathbb{E}[f(x|y)] = \int f(x|y)f(y) dy$. As can be seen from the graphs, this way of estimating seems to perform better. The reason for that is that this estimator incorporates more information for any given point.
+The red lines are the estimated densities using $f(x) = \mathbb{E}[f(x|y)] = \int f(x|y)f(y) dy$. As can be seen from the graphs, this way of estimating the marginal seems to perform better than simply relying on the raw draws to approximate the distribution. The reason for that is that this estimator incorporates more information for any given point.
 
-The true marginal distribution is given by:
+The (hardly) visible dotted blue line in the plot above is based on the analytic density given by:
 $$f(x) = \frac{(1-e^{-Bx})/x}{log(B^2)+\Gamma(0,B^2) + \gamma}$$
-So the shape of the marginal should roughly look like this (omitting the $\Gamma$ and $\gamma$ terms since they are positive constants that simply increase the denominator):
-```{r}
-temp_x = seq(from = 0.01, to = 5, by = 0.01)
-plot(1:500/100, ((1-exp(-5*temp_x))/temp_x/(log(5^2)))*0.1, type = "l", 
-     main = "Approximate analytic f(x)", ylab = "frequency", xlab = "simulated values")
-```
-
-Looks pretty similar to what we got before, so it seems we did a good job:)
+As we can see, the approximation is really close to the exact solution.
 
 Now let's investigate the performance of the algorithm. The table above shows that the lower the treshold B, the higher the rate of rejection and consequently, the sampler needs to run longer before it draws an appropriate sample.
 
@@ -698,9 +703,10 @@ mh_gibbs_exp = function(B, k, delta = 0.3) {
 }
   
 ```
+If we use the unrestricted conditional exponential distribution in our MH algorithm, the sampler is equivalent to our Gibbs sampler with rejection sampling. So we accept all samples from [0, B] and reject the rest.
 
 Using this sampler gives us:
-```{r}
+```{r, warning=0, message=0}
 res_mh_exp = NULL
   for (b in c(0.01, 0.1, 1:8)) {
     res_mh_exp = rbind(res_mh_exp, cbind(b, mh_gibbs_exp(B = b, k = 1000)))
@@ -779,3 +785,4 @@ mean(exceeded_sim)
 hist(exceeded_sim)
 ```
 
+### c
