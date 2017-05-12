@@ -9,3 +9,5 @@ bayes.Rproj
 *.nb.html
 *.rds
 *.Rdata
+*.md
+*.ipynb
