@@ -219,25 +219,35 @@ For rejection sampling to work, we need to find an enveloping density $g(x)$ tha
 The lower the treshold B, the higher the probability that we will draw an element that is not acceptable and needs to be rejected. So we expect this method to work well the larger B gets and badly the closer B gets to 0 since it takes longer and longer to obtain a draw that is not rejected.
 
 ```{r}
-gibbs_rejection = function(B, k){
+proposal_fun_exp = function(x) {
+  rexp(1, rate = x)
+}
+
+proposal_fun_unif = function() {
+  runif(1, min = 0, max = B)
+} 
+
+gibbs_rejection = function(B, k, proposal_fun){
   start = Sys.time()
   x = rep(B, k)
   y = rep(B, k)
-  x_rej = 0
-  y_rej = 0
+  x_rej = -1
+  y_rej = -1
   set.seed(1234)
   
   for (i in 2:k){
     x_accept = FALSE
     while(!x_accept) {
         x_rej = x_rej + 1
-        x[i] = rexp(1, rate = y[i-1])
+        x[i] = proposal_fun(y[i-1])
+        # x[i] = rexp(1, rate = y[i-1])
         x_accept = x[i] <= B
     }
     y_accept = FALSE
     while(!y_accept) {
         y_rej = y_rej + 1
-        y[i] = rexp(1, rate = x[i])
+        y[i] = proposal_fun(x[i-1])
+        # y[i] = rexp(1, rate = x[i])
         y_accept = y[i] <= B
     }
   }
@@ -251,6 +261,8 @@ gibbs_rejection = function(B, k){
 
   return(results)
 }
+
+gibbs_rejection(B = 5, k = 1000, proposal_fun = proposal_fun_unif)
 ```
 
 The results of the algorithm are as follows:
@@ -405,6 +417,12 @@ if (FALSE) {
 }
 
 gibbs_unif
+
+
+
+```
+```{r}
+gibbs_rejection(B = 5, k = 1000, proposal_fun_unif)
 ```
 
 This paragraph was written while waiting for the sampler to finish (after drinking coffee, reading an article in the newspaper and some other stuff. In the end I stopped the sampler and set max(i) = 8). The problem with using the uniform distribution is that as B becomes larger and larger, we need more and more draws to find a value we do not reject. Choosing a 'bad' proposal distribution can have a huge impact on run-time. However, for small values of B the uniform distribution is quite handy, because we only sample on the restricted support of the truncated exponential and not on $\mathbb{R}_+$
