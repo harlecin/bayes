@@ -670,8 +670,8 @@ min\left\{1, \frac{p(y^*|x)q(y^{(s)}|x)}{p(y^{(s)}|x)q(y^{*}|x)} \right\}$$
 mh_gibbs_exp = function(B, k, delta = 0.3) {
   x = rep(B, k)
   y = rep(B, k)
-  x_temp = 3 
-  y_temp = 3
+  x_temp = B 
+  y_temp = B
   
   p = function(x, rate, B) {
     rate*exp(-rate*x) * 1/(1-exp(-B*rate)) * (x <= B) * (0 <= x)
@@ -706,10 +706,10 @@ mh_gibbs_exp = function(B, k, delta = 0.3) {
 If we use the unrestricted conditional exponential distribution in our MH algorithm, the sampler is equivalent to our Gibbs sampler with rejection sampling. So we accept all samples from [0, B] and reject the rest.
 
 Using this sampler gives us:
-```{r, warning=0, message=0}
+```{r, warning=0, message=0, error=0}
 res_mh_exp = NULL
   for (b in c(0.01, 0.1, 1:8)) {
-    res_mh_exp = rbind(res_mh_exp, cbind(b, mh_gibbs_exp(B = b, k = 1000)))
+    res_mh_exp = rbind(res_mh_exp, cbind(b, (mh_gibbs_exp(B = b, k = 1000))))
   }
 res_mh_exp
 ```
@@ -814,7 +814,7 @@ if (FALSE) {
   exceeded_sim_qt = replicate(10000, simulation(rnorm(111, mu, sqrt(sigma2))))
   saveRDS(exceeded_sim_qt, file = "exceeded_sim_qt.Rds")
 } else {
-  exceeded_sim_at = readRDS(file = "exceeded_sim_qt.Rds")
+  exceeded_sim_qt = readRDS(file = "exceeded_sim_qt.Rds")
 }
 
 mean(exceeded_sim_qt)
@@ -825,6 +825,23 @@ hist(exceeded_sim_qt)
 
 ### d
 ```{r}
+draws <- 100000
+s2draws <- rep(1, draws)
+mudraws <- rep(0, draws)
+preddraws = rep(NA, draws-1)
 
+n = length(data.sim)
+for (i in 2:draws) {
+ mudraws[i] <- rnorm(1, mean(data.sim), sqrt(s2draws[i-1]/n))
+ s2draws[i] <- 1/rgamma(1, (n+1)/2, (var(data.sim)*(n-1) + n*(mudraws[i] - mean(data.sim))^2)/2)
+ preddraws[i] = rnorm(1, mudraws[i], s2draws[i])
+}
+
+quantile(preddraws, 0.05, na.rm = 1)
 ```
+### e
+```{r}
+hist(qnorm(p = 0.05, preddraws, sd = sqrt(s2draws)))
+```
+
 
