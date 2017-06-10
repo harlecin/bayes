@@ -1,0 +1,164 @@
+---
+title: "Bayesian Poisson Model"
+output: 
+  flexdashboard::flex_dashboard:
+    storyboard: true
+    theme: yeti
+---
+
+### **Intro** - Over the following slides I am going to present the theory on how to model count data in a Bayesian setting and will conclude by showing a practical example
+
+#### Agenda
+
+- Poisson model - frequentist setting
+- Poisson model - Bayesian setting
+- Implementation in R
+- Comparison
+
+***
+
+#### Brief recap:
+Poisson regression is part of the generalized linear model GLM regression family and used to model count and/or contingency tables.
+
+As the name implies, the response Y is modeled as:
+$$Y \sim\text{ Pois}(\lambda)$$
+and the conditional expectation is taken to be log-linear:
+$$log(\mathbb{E}(Y|X)) = \beta'x$$
+A drawback of the Poisson model is that the mean and variance are assumed to be equal. A possible generalization is the negative binomial model.
+
+### **Poisson regression model** - on this slide we are going to derive the MLE estimate for $\beta$ 
+
+Define:
+$$\lambda := \mathbb{E}(Y|x) = e^{\beta'x}$$
+The Poisson distribution is given by:
+$$p(y|x;\beta) = \frac{\lambda^y}{y!}e^{-\lambda} = \frac{e^{\beta' x y}}{y!}e^{-e^{\beta' x}}$$
+Now suppose $x_i \in \mathbb{R}^{n+1},~i = 1 \dots m$ & $y_1, \dots, y_m \in \mathbb{R}$, then the likelihood has the following form (assuming Y is iid):
+$$p(y_1, \dots, y_m|x_1, \dots, x_m; \beta) = \prod_{i = 1}^{m}\frac{e^{\beta' x_i y_i}}{y_i!}e^{-e^{\beta' x_i}} = L(\beta|Y, X)$$
+Taking logs igves us the log-lik:
+$$\mathcal{l}(\beta|X, Y) = log(L(\beta|X, Y) = \sum_{i = 1}^m(y_i\beta'x_i - e^{\beta'x_i} - \underbrace{log(y_i!)}_{no~\beta \implies ignore})$$
+So to find $\beta$, we simply need to solve the following equation using some numerical scheme:
+$$\frac{\partial l(\beta|X,Y)}{\partial \beta} = 0$$
+
+### **Poisson regression - Bayesian setting** - A closed form solution is only in special cases available
+
+In a Bayesian setting we want to find:
+
+$$g(\theta|y) = \frac{f(y|\theta)\pi(\theta)}{f(y)} \propto  f(y|\theta)\pi(\theta)$$
+For the Poisson model we can get a closed form posterior only without covariates:
+$$\begin{align*}
+y_i &\sim Pois(\lambda) \\
+\lambda &\sim Gamma(\alpha \geq 0, \beta \geq 0)
+\end{align*}$$
+
+Since the gamma is the conjugate prior for the Poisson parameter $\lambda$ we get:
+$$g(\lambda|y) \propto \underbrace{\left( \prod_{i = 1}^n e^{-\lambda}\lambda^{y_i}\right)}_{\text{kernel likelihood wrt }\lambda} \frac{\alpha^{\beta}}{\Gamma(\alpha)}\lambda^{\alpha - 1}e^{-\lambda \beta} \propto \underbrace{e^{-\lambda(\beta - n)}\lambda^{\alpha + n \bar{y}-1}}_{\implies \Gamma(\alpha + n \bar{y}, \beta + n)}$$
+
+No conjugate prior exists for the $(k x 1)$ parameter vector $\beta$ in the Poisson regression model where the likelihood is proportional to:
+$$L(\beta|y,x) \propto \underbrace{\prod_{i = 1}^n e^{\beta' x_i y_i}e^{-e^{\beta'x_i}}}_{\text{kernel wrt } \beta}$$
+
+### **Metropolis-Hastings** - We use MH to simulate from the posterior distribution {data-commentary-width=400}
+
+One way to obtain draws from the posterior distribution is to use the Metropolis-Hastings algorithm.
+
+#### Brief refresher MH-algorthm:
+Update $\beta_0$:
+
+1. Sample $\beta_0^* \sim J_{\beta_0}(\beta_0^{(s)}, \dots, \beta_k^{(s)})$
+2. Compute the acceptance ratio R:
+$$R = min\left( \frac{p(\beta_0^*, \beta_{i\neq 0}^{(s)})}{ p(\beta_0^{(s)}, \beta_{i\neq 0})} \times 
+\frac{J_{\beta_0}(\beta_0^{(s)}| \beta_0^*, \beta_{i\neq 0}^{(s)})}{ J_{\beta_0}(\beta_0^*| \beta_0^{(s)}, \beta_{i\neq 0}^{(s)})}
+\right)$$
+3. Set $\beta_0^{s+1}$ = $\beta_0^*$ if Unif(0,1) < R else, keep the previous value
+
+Update the next beta and so forth...
+
+We are going to use the package `rstanarm` and stan uses a method called 'Hamiltonian Monte Carlo' which we will not discuss further. Suffice it to say, that in some cases this is an attractive alternative to Gibbs sampling as used by JAGS.
+
+### **Case study** Comparing efficancy of pest management systems {data-commentary-width=700}
+
+![roach](http://www.insightpest.com/images/german_roach_sq.jpg)
+
+***
+#### Get rid of those little creeps!
+
+The following case study is taken from the rstanarm vignette:
+
+Consider the following data set on efficacy of pest management at reducing the number of roaches in urban departments:
+262 observations of 6 variables:
+
+- y Number of roaches
+- roach1 Pretreatment number of roaches
+- treatment Treatment indicator
+- senior Indicator for only elderly residents in building
+- exposure2 Number of days for which the roach traps were used
+
+> We want to measure the efficacy of pest management systems at reducing the roach infestation.
+
+The model used is the following:
+
+**y ~ intercept + roach1 + treatment + senior, offset = log(exposure2)**
+
+The last term, called the offset accounts for the fact that we are actutally modelling "roaches killed while pest control was used", i.e.
+$$log\left(\frac{\text{# roaches killed}}{\text{# days pest control was used}}\right) = \beta'x$$
+So in order to get to log(# roaches killed), we add log(# days pest control was used) to the RHS to get back to modeling counts. Note: the offset is required to have a coefficient of 1!
+
+### **Model estimation** in R with glm() and rstanarm {data-commentary-width=600}
+
+```{r, eval = 0, include = 1}
+library(rstanarm)
+CHAINS = 4
+CORES = 2
+SEED = 1234
+
+# Estimate original model
+glm1 <- glm(y ~ roach1 + treatment + senior, offset = log(exposure2), 
+            data = roaches, family = poisson)
+# Estimate Bayesian version with stan_glm
+stan_glm1 <- stan_glm(y ~ roach1 + treatment + senior, offset = log(exposure2),
+                      data = roaches, family = poisson, 
+                      prior = normal(0,2.5), prior_intercept = normal(0,5),
+                      chains = CHAINS, cores = CORES, seed = SEED)
+save(stan_glm1, file = "stan_glm1")
+save(glm1, file = "glm1")
+```
+```
+library(rstanarm)
+CHAINS = 4
+CORES = 2
+SEED = 1234
+
+# Estimate original model
+glm1 = glm(y ~ roach1 + treatment + senior, offset = log(exposure2), 
+            data = roaches, family = poisson)
+            
+# Estimate Bayesian version with stan_glm
+stan_glm1 = stan_glm(y ~ roach1 + treatment + senior, offset = log(exposure2),
+                      data = roaches, family = poisson, 
+                      prior = normal(0,2.5), prior_intercept = normal(0,5),
+                      chains = CHAINS, cores = CORES, seed = SEED)
+```
+
+```{r}
+load(file = "stan_glm1")
+load(file = "glm1")
+
+round(rbind(glm = coef(glm1), stan_glm = coef(stan_glm1)), digits = 2)
+```
+
+*** 
+
+Both estimates are basically identical, which is not unusual if our prior is not very informative and there is quite a sizeable sample. 
+
+**One important note:**
+
+The priors in the `stan_glm()` routine are assumed to be independent! So the posterior that was used is given by:
+
+$$p(\beta_0, \dots, \beta_k) \propto \prod_{i = 1}^k f(\beta_i) \times \prod_{i = 1}^N \frac{e^{\beta' x_i y_i}}{y_i!}e^{-e^{\beta' x_i}} $$
+
+As we said in the introduction, the Poisson model assumes that mean and variance are equal. This is likely not the case, but can be accounted for by using either a different model (e.g. the negative-binomial one) or by tweaking the Poisson regression.
+
+But this is going to be discussed in a future talk:)
+
+### **Thank you for your attention!** - It is over, really! You can wake up now:)
+
+![thank you](http://www.meme-generator.de/media/created/lfir7w.jpg)
