@@ -11,3 +11,5 @@ bayes.Rproj
 *.Rdata
 *.md
 *.ipynb
+*.log
+*.pdf
