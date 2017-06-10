@@ -1,0 +1,14 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+library(sparklyr)
+library(dplyr)
+sc <- spark_connect(master = "local", version = "2.1.0")
+```
+
+```{r}
+
+```
