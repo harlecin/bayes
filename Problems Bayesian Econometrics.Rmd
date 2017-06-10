@@ -793,7 +793,6 @@ t_scaled = function(m, M, t, y, a, b, alpha) {
   a_tick = a + t/2
   b_tick = b + 1/2*sum((y-mean(y))^2) + (t*(mean(y)-m)^2)/(2*(M*t + 1))
   
-  ## sd or sd^2?
   qt_scaled = metRology::qt.scaled(alpha, df = 2*a_tick, mean = m_tick, sd = sqrt(b_tick*(M_tick+1)/a_tick))
   
   qt_scaled
