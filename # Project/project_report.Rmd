@@ -1,17 +1,113 @@
 ---
-title: "Project Bayesian Econometrics"
+title: "Bayesian Models for Count Data"
+subtitle: "Course - Advanced Topics in Econometrics"
 author: "Christoph Bodner"
 output: html_notebook
 ---
 
-This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+Count data is quite common in many real world situations from forecasting the number of cars on a particular road to the number of flu cases each month. In this project we will try to model the number of errors produced by industrial machines using a Baysian approach. 
 
-Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+We will start off by ignoring the count data structure and simply model the number of errors using plain OLS. In a next step, we will explicitly account for (pun intended:) for the special nature of our data and will use a Poisson model.
 
-```{r}
-plot(cars)
+We will perform a prior-sensitivity analysis to get an idea how dependend our results on the particular choices of priors used. Finally, we will evaluate the predictive performance of all models on our test set.
+
+This project uses the following R packages:
+```{r libraries, message=0}
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(rstan)
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+Now, let's load our data set and take a look at some summary statistics:
+```{r load data}
+load(file = "../count_data.rda")
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+summary(count_data)
+```
+
+Our dataset spans 6 months from beginning of July to the end of December.  The dataset contains `r nrow(count_data)` entries with about 4,500 entries having NA's. 
+
+**description variables here**
+
+We begin our analysis by preparing the data and splitting it into a training and a test group. 
+```{r data preparation}
+data_ready = count_data %>%
+  ## only keep complete cases 
+  filter(complete.cases(.)) %>%
+  ## convert to factor
+  mutate_each(funs(as.factor), INTERN, MAKE)
+
+# split into training and test set:
+ID_unique = unique(data_ready$ID)
+ID_unique_n = length(ID_unique)
+
+# randomly sample 80% of IDs for training and use remaining 20% for test purposes:
+ID_train = sample(ID_unique, size = 0.8*ID_unique_n, replace = F)
+
+data_train = data_ready %>%
+  filter(ID %in% ID_train)
+
+data_test = data_ready %>%
+  filter(!(ID %in% ID_train))
+
+# Did we split into non-overlapping sets?
+nrow(data_ready) == nrow(data_train) + nrow(data_test)
+```
+Note, we split the data along ID into training and test and not along time to avoid foresight bias. We assigned IDs randomly to training and test set. Maybe a better approach would be to assign IDs to training and test set such that the distribution of characteristics is most similar. 
+
+Now we can start building our models:)
+
+### Estimation of counts with vanilla OLS
+```{r stan options}
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+
+```{stan output.var = stan_ols}
+/*
+* Vanilla OLS example
+*/
+
+data {
+  int N; //# of observations
+  int N2; // size of new_X matrix
+  int K; // # of columns in model matrix
+  real y[N]; //response
+  matrix[N,K] X; // model matrix
+  matrix[N2, K] new_X; //matrix for predicted values
+}
+parameters {
+  vector[K] beta; //regression parameters
+  real sigma; //standard deviation
+}
+transformed parameters {
+  vector[N] linpred;
+  linpred = X*beta;
+}
+model {
+  beta[1] ~ cauchy(0,10); //prior for intercept
+  
+  for(i in 2:K)
+    beta[i] ~ cauchy(0, 2.5); //prior for slope coeffs
+    
+  y ~ normal(linpred, sigma);
+}
+```
+
+
+```{r}
+# X <- model.matrix(outcome ~ predictor1 + predictor2 ..., data = your_dataset)
+```
+
+### Estimation of counts with Poisson regression
+
+### Sensitivity analysis
+#### Likelihood + Prior + Posterior plots
+#### Different priors
+
+### Shrinkage priors
+
+### Evaluation of predictive performance
+
