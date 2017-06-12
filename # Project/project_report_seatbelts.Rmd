@@ -1,0 +1,179 @@
+---
+title: "Bayesian Causal Impact Analysis"
+subtitle: "Course - Advanced Topics in Econometrics"
+author: "Christoph Bodner"
+output: html_notebook
+---
+
+Measuring the effect of an intervention on some metric is an important problem in many areas of business and academia. Imagine, you want to know the effect of a recently launched advertising campaign on product sales. In an ideal setting, you would have a treatment and a control group so that you can measure the effect of the campaign. Unfortunately, many times it is not possible or feasible to run a controlled experiment.
+
+This project focuses on settings where we cannot run experiments and still need to estimate the effect of the intervention. To estimate the causal impact, we will try and compare different methods:
+
+- Vanilla Bayesian regression models
+- Bayesian count regression models
+- Bayesian structural time-series models
+
+The vanilla regression model is as the name suggests, pretty simple: we simply include an indicator variable equal to 1 starting from the time wearing seatbelts became compulsory and check if the corresponding regression coefficient is different from zero. We do the same in the count regression setting. Moreover we also try to model the pre-intervention phase and then forecast the post-intervention phase. Large deviations between the forecast and the actual series can be interpreted as signs that the intervention had an effect (as long as the model had adequate fit in the pre-intervention phase). For the Bayesian structural time-series model we will try to employ the approach used by Brodersen et al (2015) in their paper "Inferring Causal Impact using Bayesian Structural Time-Series Models".
+
+We try to measure the effect that compulsory wearing of seat belts had on UK drivers deaths. We use the 'SeatBelts' dataset that contains information on the monthly total of car drivers in the UK killed or seriously injured between January 1969 and December 1984. Using front-seatbelts became mandatory starting 31 January 1983. 
+
+This project relies mainly on the following packages:
+```{r libraries, message=0}
+library(dplyr)
+library(tibble)
+library(timekit)
+library(ggplot2)
+library(ggthemes)
+library(rstan)
+library(rstanarm)
+```
+
+Now, let's load our data set and take a look at some summary statistics:
+```{r load data}
+data_seatbelts = tk_tbl(Seatbelts)
+
+data_seatbelts
+```
+```{r summary}
+summary(data_seatbelts)
+```
+
+In a next step, we add flags for important safety features that were introduced and split the time index:
+```{r data augmentation}
+data_seatbelts = data_seatbelts %>%
+  mutate(month = lubridate::month(data_seatbelts$index),
+         year = lubridate::year(data_seatbelts$index),
+         time_index = 1:nrow(data_seatbelts),
+         eABS = ifelse(year >= 1978, 1, 0),
+         airbag = ifelse(year >= 1981, 1, 0)
+         ) %>%
+  mutate_each(funs(as.factor), month, year)
+```
+
+
+Before we start the analysis, let's take a look at the data:
+```{r plot driverskilled}
+ggplot(data_seatbelts) +
+  geom_rect(xmin = 1983.083, xmax = 1984.917,
+          ymin = 0, ymax = 0.02,
+          fill = tidyquant::palette_light()[[5]],
+          alpha = 0.01) +
+  geom_line(aes(x = index, y = DriversKilled/kms)) +
+  geom_smooth(aes(x = index, y = DriversKilled/kms), method = "lm") +
+  geom_line(data = filter(data_seatbelts, law == 1), aes(x = index, y = DriversKilled/kms), col = "blue") +
+  geom_vline(xintercept = c(1978, 1981)) +
+  annotate("text", x = 1977.2, y = 0.019, label = "eABS") +
+  annotate("text", x = 1980.2, y = 0.019, label = "airbag") +
+  annotate("text", x = 1983.2, y = 0.019, label = "seatbelt law") +
+  theme_hc() +
+  ggtitle("# drivers killed/km driven shows declining trend over whole period", 
+          "Blue line highlights compulsory seatbelt law") +
+  xlab(NULL)
+```
+The chart suggests that even before using seatbelts was compulsory, the number of drivers killed per km driven has been declining. So did introducing seatbelts actually help? 
+
+Before we begin to build our models, we split the data into a pre- and post-treatment part:
+```{r split data into pre- and post-treatment}
+data_pretreat = data_seatbelts %>%
+  filter(law != 1)
+
+data_treat = data_seatbelts %>%
+  filter(law == 1)
+```
+
+We start of by modeling the number of drivers killed using a vanilla regression model:
+
+### Vanilla regression
+
+We use cauchy priors for our betas and an improper uniform prior for sigma with support on $(-\infty, \infty)$.
+```{stan output.var=vanilla_regression}
+/*
+*Vanilla regression
+*/
+
+data {
+  int N; //the number of observations
+  int N2; //the size of the new_X matrix
+  int K; //the number of columns in the model matrix
+  real y[N]; //the response
+  matrix[N,K] X; //the model matrix
+  matrix[N2,K] new_X; //the matrix for the predicted values
+}
+parameters {
+  vector[K] beta; //the regression parameters
+  real sigma; //the standard deviation
+}
+transformed parameters {
+  vector[N] linpred;
+  linpred = X*beta;
+}
+model {  
+  beta[1] ~ cauchy(0,10); //prior for the intercept following Gelman 2008
+
+  for(i in 2:K)
+   beta[i] ~ cauchy(0,2.5);//prior for the slopes following Gelman 2008
+  
+  y ~ normal(linpred,sigma);
+}
+generated quantities {
+  vector[N2] y_pred;
+  y_pred = new_X*beta; //the y values predicted by the model
+}
+
+```
+
+
+```{r vanilla regression}
+model_glm_vanilla = stan_glm(formula = DriversKilled ~ kms + PetrolPrice + VanKilled + month,
+                      data = data_pretreat,
+                      family = gaussian,
+                      prior = normal(0, 2.5),
+                      prior_intercept = normal(0,5),
+                      chains = 2,
+                      cores = 2,
+                      seed = 20170711
+                      )
+
+summary(model_glm_vanilla)
+```
+
+
+### Poisson regression
+```{r stan options}
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+```{r rstan glm poisson, message=0}
+model_glm = stan_glm(formula = DriversKilled ~ PetrolPrice + VanKilled + month + year, offset = log(kms),
+                      data = data_pretreat,
+                      family = "poisson",
+                      prior = normal(0, 2.5),
+                      prior_intercept = normal(0,5),
+                      chains = 5,
+                      cores = 2,
+                      seed = 20170711
+                      )
+
+summary(model_glm)
+```
+
+
+```{r}
+# X <- model.matrix(outcome ~ predictor1 + predictor2 ..., data = your_dataset)
+```
+
+### Estimation of counts with Poisson regression
+
+### Sensitivity analysis
+#### Likelihood + Prior + Posterior plots
+#### Different priors
+
+### Shrinkage priors
+
+### Evaluation of predictive performance
+
+
+### Open
+- Trend vs. differences?
+- seasonal behavior with sine/cosine?
