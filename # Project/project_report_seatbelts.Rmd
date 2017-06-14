@@ -84,6 +84,10 @@ data_treat = data_seatbelts %>%
 We start of by modeling the number of drivers killed using a vanilla regression model:
 
 ### Vanilla regression
+```{r stan options}
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
 
 We use cauchy priors for our betas and an improper uniform prior for sigma with support on $(-\infty, \infty)$.
 ```{stan output.var=vanilla_regression}
@@ -92,43 +96,49 @@ We use cauchy priors for our betas and an improper uniform prior for sigma with 
 */
 
 data {
-  int N; //the number of observations
-  int N2; //the size of the new_X matrix
-  int K; //the number of columns in the model matrix
-  real y[N]; //the response
+  int<lower=0> N; //the number of observations
+  int<lower=0> K; //the number of columns in the model matrix
   matrix[N,K] X; //the model matrix
-  matrix[N2,K] new_X; //the matrix for the predicted values
+  vector[N] y; //response variable
 }
 parameters {
-  vector[K] beta; //the regression parameters
-  real sigma; //the standard deviation
-}
-transformed parameters {
-  vector[N] linpred;
-  linpred = X*beta;
+  real alpha; //intercept
+  vector[K] beta; //regression parameters - column vector by default
+  real<lower=0> sigma; //the standard deviation
 }
 model {  
-  beta[1] ~ cauchy(0,10); //prior for the intercept following Gelman 2008
-
-  for(i in 2:K)
-   beta[i] ~ cauchy(0,2.5);//prior for the slopes following Gelman 2008
+  alpha ~ cauchy(0,10); //prior for the intercept following Gelman 2008
   
-  y ~ normal(linpred,sigma);
-}
-generated quantities {
-  vector[N2] y_pred;
-  y_pred = new_X*beta; //the y values predicted by the model
-}
+  for(i in 1:(K-1))
+    beta[i] ~ cauchy(0,2.5);//prior for the slopes following Gelman 2008
 
+  y ~ normal(X * beta + alpha, sigma);
+}
+```
+
+```{r stan model fitting}
+# Create model matrix for Stan
+X = model.matrix(~ kms + PetrolPrice + VanKilled + law + month, data = data_seatbelts)
+head(as.tibble(X))
+y = data_seatbelts$DriversKilled
+N = nrow(data_seatbelts)
+K = ncol(X)
+
+model_vanilla_test = sampling(vanilla_regression, data = list(N = N, K = K, y = y, X = X),
+                              chains = 2, iter = 1000, seed = 20170711, cores = 2, control = list(max_treedepth = 10))
+```
+```{r diagnostics}
+pairs(model_vanilla_test)
+summary(model_vanilla_test)
 ```
 
 
 ```{r vanilla regression}
-model_glm_vanilla = stan_glm(formula = DriversKilled ~ kms + PetrolPrice + VanKilled + month,
-                      data = data_pretreat,
+model_glm_vanilla = stan_glm(formula = DriversKilled ~ kms + PetrolPrice + VanKilled + law + month,
+                      data = data_seatbelts,
                       family = gaussian,
-                      prior = normal(0, 2.5),
-                      prior_intercept = normal(0,5),
+                      prior = cauchy(0,2.5),
+                      prior_intercept = cauchy(0,10),
                       chains = 2,
                       cores = 2,
                       seed = 20170711
@@ -139,17 +149,13 @@ summary(model_glm_vanilla)
 
 
 ### Poisson regression
-```{r stan options}
-rstan_options(auto_write = TRUE)
-options(mc.cores = parallel::detectCores())
-```
 
 ```{r rstan glm poisson, message=0}
 model_glm = stan_glm(formula = DriversKilled ~ PetrolPrice + VanKilled + month + year, offset = log(kms),
                       data = data_pretreat,
                       family = "poisson",
-                      prior = normal(0, 2.5),
-                      prior_intercept = normal(0,5),
+                      prior = cauchy(0,2.5),
+                      prior_intercept = cauchy(0,10),
                       chains = 5,
                       cores = 2,
                       seed = 20170711
@@ -177,3 +183,4 @@ summary(model_glm)
 ### Open
 - Trend vs. differences?
 - seasonal behavior with sine/cosine?
+- change in petrol price?
