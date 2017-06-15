@@ -47,7 +47,10 @@ data_seatbelts = data_seatbelts %>%
          eABS = ifelse(year >= 1978, 1, 0),
          airbag = ifelse(year >= 1981, 1, 0)
          ) %>%
-  mutate_each(funs(as.factor), month, year)
+  ## Don't forget to convert dummies to factors! (important for model.matrix())
+  mutate_each(funs(as.factor), month, year, law, eABS, airbag)
+
+
 ```
 
 
@@ -83,13 +86,92 @@ data_treat = data_seatbelts %>%
 
 We start of by modeling the number of drivers killed using a vanilla regression model:
 
+**! Attention ! data set has rather low number of observations (192) -> quite sensitive to priors!**
+
 ### Vanilla regression
+
+For the following hand-coded Gibbs sampler we assume the following model:
+
+- observation equation (aka likelihood): $\textbf{y}|\beta, \sigma \sim \mathcal{N}(\textbf{X}\beta, \sigma^2\textbf{I})$
+- prior distributions: $\beta|\sigma^2 \sim \mathcal{N}(\textbf{b}_0, \sigma^2\textbf{B}_0)$, $\sigma^2 \sim \mathcal{IG}(c_0, C_0)$
+
+By Bayes' formula, the posterior density is then given by:
+$$p(\beta, \sigma|y) \sim p(\textbf{y}|\beta, \sigma)p(\beta, \sigma^2) = p(\textbf{y}|\beta, \sigma)p(\beta|\sigma^2)p(\sigma^2)$$
+
+Since a normal-inverse-gamma prior is conjugate to a normal likelihood, the posterior is again a normal-inverse-gamma distribution. The conditional distributions are given by:
+
+** insert conditional distributions for beta and sigma **
+
+
+
+```{r vanilla regression Gibbs sampler}
+X = model.matrix(~ kms + PetrolPrice + VanKilled + law + month, data = data_seatbelts)
+y = data_seatbelts$DriversKilled
+
+n = nrow(X)               # no. observations
+p = ncol(X)               # no. predictors incl. intercept
+
+draws = 10000
+burnin =  1000
+
+## initialize some space to hold results:
+res <- matrix(as.numeric(NA), nrow=draws+burnin+1, ncol=p+1)
+colnames(res) <- c(paste("beta", 0:(p-1), sep='_'), "sigma2")
+
+## prior values betas
+B0 = diag(0.1^2, nrow = p, ncol = p)
+b0 = c(180, 0, -500, 0, -10, rep(0, 11))
+
+## prior values sigma
+C0 = 1
+c0 = 1
+
+## starting values coefficients for sampler
+res[1, ] = rep(1, p+1)
+
+## precalculating values
+B0_inv = solve(B0)
+### (X'X+B0_inv)^(-1)
+pre1 = solve(crossprod(X) + B0_inv)
+
+### (X'y + B0_inv*b0)
+pre2 = t(X) %*% y + B0_inv %*% b0
+
+### cn = c0 + n/2 + p/2
+pre3 = c0 + n/2 + p/2
+
+## sampling steps
+for (i in 2:(draws+burnin+1)) {
+ if (i%%100 == 0) cat("Iteration", i, "done.\n")
+ ## beta sampling
+ Bn = res[i-1, p+1] * pre1
+ bn = Bn %*% (pre2/res[i-1,p+1])
+ ## block draw betas:
+ res[i,1:p] <- mvtnorm::rmvnorm(1, bn, Bn)
+ 
+ # draw sigma^2:
+ Cn = C0 + .5*(crossprod(y - X %*% res[i, 1:p]) + t(res[i, 1:p] - b0) %*% B0_inv %*% (res[i, 1:p] - b0))
+ res[i, p+1] <- 1/rgamma(1, shape = pre3, rate = Cn)
+}
+
+## throw away initial value and burn-in:
+res = res[-(1:(burnin+1)),]
+
+## posterior mean:
+print(colMeans(res))
+
+##OLS estimate:
+print(ols <- lm(y ~ X + 0))
+```
+
 ```{r stan options}
 rstan_options(auto_write = TRUE)
 options(mc.cores = parallel::detectCores())
 ```
 
 We use cauchy priors for our betas and an improper uniform prior for sigma with support on $(-\infty, \infty)$.
+
+** Important - model.matrix includes ALL levels of dummies!!! **
 ```{stan output.var=vanilla_regression}
 /*
 *Vanilla regression
@@ -102,17 +184,16 @@ data {
   vector[N] y; //response variable
 }
 parameters {
-  real alpha; //intercept
   vector[K] beta; //regression parameters - column vector by default
   real<lower=0> sigma; //the standard deviation
 }
 model {  
-  alpha ~ cauchy(0,10); //prior for the intercept following Gelman 2008
+  beta[1] ~ normal(0, 1000); //prior for the intercept following Gelman 2008
   
-  for(i in 1:(K-1))
-    beta[i] ~ cauchy(0,2.5);//prior for the slopes following Gelman 2008
+  for(i in 2:K)
+    beta[i] ~ normal(0, 1000);//prior for the slopes following Gelman 2008
 
-  y ~ normal(X * beta + alpha, sigma);
+  y ~ normal(X * beta, sigma);
 }
 ```
 
@@ -125,8 +206,9 @@ N = nrow(data_seatbelts)
 K = ncol(X)
 
 model_vanilla_test = sampling(vanilla_regression, data = list(N = N, K = K, y = y, X = X),
-                              chains = 2, iter = 1000, seed = 20170711, cores = 2, control = list(max_treedepth = 10))
+                              chains = 2, iter = 10000, seed = 20170711, cores = 2, control = list(max_treedepth = 10))
 ```
+
 ```{r diagnostics}
 pairs(model_vanilla_test)
 summary(model_vanilla_test)
@@ -145,7 +227,9 @@ model_glm_vanilla = stan_glm(formula = DriversKilled ~ kms + PetrolPrice + VanKi
                       )
 
 summary(model_glm_vanilla)
+print(ols <- lm(DriversKilled ~ kms + PetrolPrice + VanKilled + law + month, data = data_seatbelts)) # same result as in lm
 ```
+
 
 
 ### Poisson regression
@@ -164,10 +248,6 @@ model_glm = stan_glm(formula = DriversKilled ~ PetrolPrice + VanKilled + month +
 summary(model_glm)
 ```
 
-
-```{r}
-# X <- model.matrix(outcome ~ predictor1 + predictor2 ..., data = your_dataset)
-```
 
 ### Estimation of counts with Poisson regression
 
