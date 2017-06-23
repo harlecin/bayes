@@ -1,22 +1,25 @@
 ---
 title: "Bayesian Causal Impact Analysis"
-subtitle: "Course - Advanced Topics in Econometrics"
 author: "Christoph Bodner"
-output: html_notebook
+subtitle: Does forcing people to wear seatbelts save lives?
+output:
+  html_notebook: default
+  html_document: default
 ---
 
 Measuring the effect of an intervention on some metric is an important problem in many areas of business and academia. Imagine, you want to know the effect of a recently launched advertising campaign on product sales. In an ideal setting, you would have a treatment and a control group so that you can measure the effect of the campaign. Unfortunately, many times it is not possible or feasible to run a controlled experiment.
 
-This project focuses on settings where we cannot run experiments and still need to estimate the effect of the intervention. To estimate the causal impact, we will try and compare different methods:
+This project tries to measure the effect that compulsory wearing of seat belts had on UK driver deaths. We use the 'SeatBelts' dataset that contains information on the monthly total of car drivers in the UK killed or seriously injured between January 1969 and December 1984. Using front-seatbelts became mandatory starting 31 January 1983. We are interested in estimating the effect of this law on driver deaths.
+
+To estimate the causal impact, we will try and compare different methods:
 
 - Vanilla Bayesian regression models
 - Bayesian count regression models
 - Bayesian structural time-series models
 
-The vanilla regression model is as the name suggests, pretty simple: we simply include an indicator variable equal to 1 starting from the time wearing seatbelts became compulsory and check if the corresponding regression coefficient is different from zero. We do the same in the count regression setting. Moreover we also try to model the pre-intervention phase and then forecast the post-intervention phase. Large deviations between the forecast and the actual series can be interpreted as signs that the intervention had an effect (as long as the model had adequate fit in the pre-intervention phase). For the Bayesian structural time-series model we will try to employ the approach used by Brodersen et al (2015) in their paper "Inferring Causal Impact using Bayesian Structural Time-Series Models".
+The vanilla regression model is as the name suggests, pretty simple: we simply include an indicator variable equal to 1 starting from the time wearing seatbelts became compulsory and check if the corresponding regression coefficient is different from zero (hopefully negative). We do the same in the count regression setting. Moreover we also try to model the pre-intervention phase and then forecast the post-intervention phase. Large deviations between the forecast and the actual series can be interpreted as signs that the intervention had an effect (as long as the model had adequate fit in the pre-intervention phase). For the Bayesian structural time-series model we will try to employ the approach used by Brodersen et al (2015) in their paper "Inferring Causal Impact using Bayesian Structural Time-Series Models".
 
-We try to measure the effect that compulsory wearing of seat belts had on UK drivers deaths. We use the 'SeatBelts' dataset that contains information on the monthly total of car drivers in the UK killed or seriously injured between January 1969 and December 1984. Using front-seatbelts became mandatory starting 31 January 1983. 
-
+## Setup
 This project relies mainly on the following packages:
 ```{r libraries, message=0}
 library(dplyr)
@@ -26,6 +29,10 @@ library(ggplot2)
 library(ggthemes)
 library(rstan)
 library(rstanarm)
+
+# devtools::install_github("hadley/colformat")
+# devtools::install_github("ropenscilabs/skimr")
+library(skimr)
 ```
 
 Now, let's load our data set and take a look at some summary statistics:
@@ -34,9 +41,7 @@ data_seatbelts = tk_tbl(Seatbelts)
 
 data_seatbelts
 ```
-```{r summary}
-summary(data_seatbelts)
-```
+
 
 In a next step, we add flags for important safety features that were introduced and split the time index:
 ```{r data augmentation}
@@ -48,11 +53,26 @@ data_seatbelts = data_seatbelts %>%
          airbag = ifelse(year >= 1981, 1, 0)
          ) %>%
   ## Don't forget to convert dummies to factors! (important for model.matrix())
-  mutate_each(funs(as.factor), month, year, law, eABS, airbag)
+  mutate_at(c("month", "year", "law", "eABS", "airbag"), as.factor)
 
 
 ```
 
+Before we continue, let's look at some summary statistics:
+```{r summary statistics}
+skim(data_seatbelts)
+```
+
+
+Last, but not least, we split our data set into a pre- and posttreatment phase:
+```{r split data into pre- and post-treatment}
+data_pretreat = data_seatbelts %>%
+  filter(law != 1)
+
+data_treat = data_seatbelts %>%
+  filter(law == 1)
+```
+## Some graphs
 
 Before we start the analysis, let's take a look at the data:
 ```{r plot driverskilled}
@@ -75,18 +95,20 @@ ggplot(data_seatbelts) +
 ```
 The chart suggests that even before using seatbelts was compulsory, the number of drivers killed per km driven has been declining. So did introducing seatbelts actually help? 
 
-Before we begin to build our models, we split the data into a pre- and post-treatment part:
-```{r split data into pre- and post-treatment}
-data_pretreat = data_seatbelts %>%
-  filter(law != 1)
+Let's take a quick look at the distribution of DriversKilled/kms:
+```{r y distribution}
+p_log = ggplot(data_seatbelts, aes(sample = log(DriversKilled) - log(kms))) +
+  stat_qq()
 
-data_treat = data_seatbelts %>%
-  filter(law == 1)
+p_normal = ggplot(data_seatbelts, aes(sample = DriversKilled/kms)) +
+  stat_qq()
+
+gridExtra::grid.arrange(p_normal, p_log, ncol = 2, top = "QQ-Plots: DriversKilled/kms vs. log(DriversKilled/kms) ")
 ```
 
-We start of by modeling the number of drivers killed using a vanilla regression model:
+While DriversKilled/kms is not quite normal, the distribution of the log() does not seem to depart much from a normal distribution. While y only needs to be conditionally normal given X, it is quite nice (although not at all necessary!) that it seems to be unconditionally normal too. We will take the log to help with numerical precision. Taking the log also gives a nice interpretation where we have the %-change in number of driver deaths per km driven given our covariates.
 
-**! Attention ! data set has rather low number of observations (192) -> quite sensitive to priors!**
+We start of by modeling the dependent variable using a vanilla regression model:
 
 ### Vanilla regression
 
@@ -98,127 +120,375 @@ For the following hand-coded Gibbs sampler we assume the following model:
 By Bayes' formula, the posterior density is then given by:
 $$p(\beta, \sigma|y) \sim p(\textbf{y}|\beta, \sigma)p(\beta, \sigma^2) = p(\textbf{y}|\beta, \sigma)p(\beta|\sigma^2)p(\sigma^2)$$
 
-Since a normal-inverse-gamma prior is conjugate to a normal likelihood, the posterior is again a normal-inverse-gamma distribution. The conditional distributions are given by:
+Since a normal-inverse-gamma prior is conjugate to a normal likelihood, the posterior is again a normal-inverse-gamma distribution. So we could either calculate the parameters of the posterior distribution and use it directly or we could use Gibbs sampling to approximate the posterior through simulation. We will do the latter here.
 
-** insert conditional distributions for beta and sigma **
+It can be shown that the full conditional distributions of $\beta$ and $\sigma$ are given by:
 
+- $\beta|\textbf{y}, \sigma^2 \sim \mathcal{N}(b_n, B_n)$ with  
+  $$\begin{align*}
+  B_n &= \sigma^2 \overbrace{(X'X+B_0^{-1})^{-1}}^{=pre1} \\
+  b_n &= B_n \underbrace{\frac{1}{\sigma^2}(X'y+B_0^{-1}b_0)}_{=pre2}
+  \end{align*}$$
+- $\sigma^2|\textbf{y}, \beta \sim \mathcal{c_n, C_n}$ with  
+  $$\begin{align*}
+  c_n &= c_0 + \frac{n}{2} + \frac{p}{2} \\
+  C_n &= C_0 + \frac{1}{2}[(y-X\beta)'(y-X\beta) + (\beta - b_0)'B_0^{-1}(\beta-b_0)]
+  \end{align*}$$  
 
-
+This gives us the following vanilla Gibbs sampler:
 ```{r vanilla regression Gibbs sampler}
-X = model.matrix(~ kms + PetrolPrice + VanKilled + law + month, data = data_seatbelts)
-y = data_seatbelts$DriversKilled
-
-n = nrow(X)               # no. observations
-p = ncol(X)               # no. predictors incl. intercept
-
-draws = 10000
-burnin =  1000
-
-## initialize some space to hold results:
-res <- matrix(as.numeric(NA), nrow=draws+burnin+1, ncol=p+1)
-colnames(res) <- c(paste("beta", 0:(p-1), sep='_'), "sigma2")
-
-## prior values betas
-B0 = diag(0.1^2, nrow = p, ncol = p)
-b0 = c(180, 0, -500, 0, -10, rep(0, 11))
-
-## prior values sigma
-C0 = 1
-c0 = 1
-
-## starting values coefficients for sampler
-res[1, ] = rep(1, p+1)
-
-## precalculating values
-B0_inv = solve(B0)
-### (X'X+B0_inv)^(-1)
-pre1 = solve(crossprod(X) + B0_inv)
-
-### (X'y + B0_inv*b0)
-pre2 = t(X) %*% y + B0_inv %*% b0
-
-### cn = c0 + n/2 + p/2
-pre3 = c0 + n/2 + p/2
-
-## sampling steps
-for (i in 2:(draws+burnin+1)) {
- if (i%%100 == 0) cat("Iteration", i, "done.\n")
- ## beta sampling
- Bn = res[i-1, p+1] * pre1
- bn = Bn %*% (pre2/res[i-1,p+1])
- ## block draw betas:
- res[i,1:p] <- mvtnorm::rmvnorm(1, bn, Bn)
- 
- # draw sigma^2:
- Cn = C0 + .5*(crossprod(y - X %*% res[i, 1:p]) + t(res[i, 1:p] - b0) %*% B0_inv %*% (res[i, 1:p] - b0))
- res[i, p+1] <- 1/rgamma(1, shape = pre3, rate = Cn)
+gibbs_nig <- function(y, X, B0_diag = 10^2, b0_mu = 0, c0 = 1, C0 = 1) {
+  n = nrow(X)               # no. observations
+  p = ncol(X)               # no. predictors incl. intercept
+  
+  draws = 10000
+  burnin =  1000
+  
+  ## initialize some space to hold results:
+  res <- matrix(as.numeric(NA), nrow=draws+burnin+1, ncol=p+1)
+  colnames(res) <- c(paste("beta", 0:(p-1), sep='_'), "sigma2")
+  
+  ## prior values betas
+  B0 = diag(B0_diag, nrow = p, ncol = p)
+  b0 = rep(b0_mu, p)
+  
+  ## prior values sigma
+  C0 
+  c0 
+  
+  ## starting values coefficients for sampler
+  res[1, ] = rep(1, p+1)
+  
+  ## precalculating values
+  B0_inv = solve(B0)
+  ### (X'X+B0_inv)^(-1)
+  pre1 = solve(crossprod(X) + B0_inv)
+  
+  ### (X'y + B0_inv*b0)
+  pre2 = t(X) %*% y + B0_inv %*% b0
+  
+  ### cn = c0 + n/2 + p/2
+  pre3 = c0 + n/2 + p/2
+  
+  ## sampling steps
+  for (i in 2:(draws+burnin+1)) {
+   ## Progress indicator:
+   #if (i%%100 == 0) cat("Iteration", i, "done.\n")
+   
+   ## beta sampling
+   Bn = res[i-1, p+1] * pre1
+   bn = Bn %*% (pre2/res[i-1,p+1])
+   ## block draw betas:
+   res[i,1:p] <- mvtnorm::rmvnorm(1, bn, Bn)
+   
+   # draw sigma^2:
+   Cn = C0 + .5*(crossprod(y - X %*% res[i, 1:p]) + t(res[i, 1:p] - b0) %*% B0_inv %*% (res[i, 1:p] - b0))
+   res[i, p+1] <- 1/rgamma(1, shape = pre3, rate = Cn)
+  }
+  
+  ## throw away initial value and burn-in:
+  res = res[-(1:(1000+1)),]
+  
+  res
 }
-
-## throw away initial value and burn-in:
-res = res[-(1:(burnin+1)),]
-
-## posterior mean:
-print(colMeans(res))
-
-##OLS estimate:
-print(ols <- lm(y ~ X + 0))
 ```
 
+Let's run the sampler and compare the results with a plain OLS estimation:
+```{r comparision OLS vs vanilla Bayes}
+## running sampler
+X = model.matrix(~ PetrolPrice + VanKilled + law + month + time_index, data = data_seatbelts)
+y = log(data_seatbelts$DriversKilled) - log(data_seatbelts$kms)
+
+res = gibbs_nig(y, X, B0_diag = 1000, b0_mu = 0)
+
+
+## posterior mean:
+vanilla_bayes = head(colMeans(res), -1)
+
+## OLS estimate:
+ols = broom::tidy(lm(log(DriversKilled)-log(kms) ~ PetrolPrice + VanKilled + law + month + time_index, data = data_seatbelts))[1:2]
+
+## prettifying output a bit:
+out = cbind(ols, vanilla_bayes, abs(ols$estimate - vanilla_bayes)<0.01)
+colnames(out) = c("coeff", "OLS", "Gibbs", "Delta < 0.01")
+rownames(out) = NULL
+out
+```
+Pretty similar, but not quite the same. Very important to note here is that due to the small sample size (only 192 observations) the priors have quite a strong say on the posterior! If we were to put stronger prior beliefs into our model the prior would dominate the posterior and the results could be very different!
+
+So both models suggest that the introduction of the law actually helped reduce the number of driver deaths per km driven. 
+
+#### Convergence tests
+
+Since the results from our sampler are more or less the same as from OLS, we should not have any convergence issues. Nevertheless, let's take a look at the traceplots of our parameters:
+```{r traceplots gibbs vanilla, fig.height=15}
+res_tibble = add_column(as.tibble(res),i = 1:nrow(res), .before = T)
+
+gibbs_gather = tidyr::gather(res_tibble, key = coeff, value = val, 2:17)
+
+ggplot(gibbs_gather, aes(x = i, y = val)) + 
+  geom_line() + 
+  facet_grid(coeff ~., scales = "free_y")
+```
+
+The traceplots show no apparent problems. So our sampler seems to have converged as expected:)
+
+
+#### Prior sensitivity tests
+
+In this section we are going to take a look at how strongly our results for the law parameter depend on the prior choice. To do that we are going to look at three cases:
+
+1. hard-to-convince case: we are pretty sure that wearing seatbelts and driver deaths are not related:  
+$$p(law | \sigma^2) \sim \mathcal{N}(0.1, \sigma^2 0.001)$$
+2. undecided case: we are not sure what we should expect (this is the scenario we considered above)  
+$$p(law | \sigma^2) \sim \mathcal{N}(0, \sigma^2 1000)$$
+3. easy-to-convince case: we are pretty sure that wearing seatbelts is a good idea
+$$p(law | \sigma^2) \sim \mathcal{N}(-1, \sigma^2 0.01)$$
+
+We will assume a constant prior for $\sigma^2$ given by $\sigma^2 \sim \mathcal{IG}(1,1)$ in all cases.
+
+There are again 2 options to get the results: we could either use Gibbs sampling again or we could calculate the posterior distribution of the law coefficient directly. We will stick to using Gibbs sampling, because deriving the marginals analytically is quite messy.
+
+```{r prior sensitivity analysis}
+res_h2c = gibbs_nig(y, X, B0_diag = 0.001, b0_mu = 0)
+res_e2c = gibbs_nig(y, X, B0_diag = 0.01, b0_mu = -1)
+
+res_h2c_tib = add_column(as.tibble(res_h2c), prior = "hard to convince", i = 1:nrow(res_h2c))
+res_e2c_tib = add_column(as.tibble(res_e2c), prior = "easy to convince", i = 1:nrow(res_e2c))
+res_undecided = add_column(as.tibble(res), prior = "undecided", i = 1:nrow(res))
+
+temp = bind_rows(res_e2c_tib, res_h2c_tib, res_undecided) %>%
+  select(beta_3, prior, i)
+
+ggplot(temp, aes(x = beta_3, color = prior)) + 
+  geom_density() +
+  ## intercept OLS
+  geom_vline(xintercept = -0.135868045) +
+  ggtitle("Prior choice has large impact on resulting posterior", 
+          "Mainly due to small sample size (N = 192)") +
+  xlab("coeff LAW") + ylab("marginal posterior density") + 
+  theme_hc()
+```
+
+The graph nicely shows that the choice of posterior has quite a large impact. This is mainly due to the fact that we have a small dataset and thus the likelihood does not overcome the prior completely. But while the conclusion in the hard-to-convince case is slightly biased towards no positive influence, we can see that quite a large region is actually still below zero. For this particular example, a prior with a lot of mass on 0, none on positive numbers (because intuitively, wearing a seatbelt should not make you worse off) and a long tail on the left, might be even better for sceptics.
+
+In a next step, we code up the same model, but this time we use Stan to estimate the posterior. First, let's set some general stan options:
 ```{r stan options}
 rstan_options(auto_write = TRUE)
 options(mc.cores = parallel::detectCores())
 ```
 
-We use cauchy priors for our betas and an improper uniform prior for sigma with support on $(-\infty, \infty)$.
+As you can see in the model code below, we use the same setup as before, with the same prior values for sigma and beta.
 
-** Important - model.matrix includes ALL levels of dummies!!! **
-```{stan output.var=vanilla_regression}
-/*
-*Vanilla regression
-*/
-
+```{stan output.var="vanilla_regression"}
 data {
-  int<lower=0> N; //the number of observations
-  int<lower=0> K; //the number of columns in the model matrix
-  matrix[N,K] X; //the model matrix
-  vector[N] y; //response variable
+  int<lower=0> N;                         //number of observations
+  int<lower=0> K;                         //number of columns (i.e. regressors) in the model matrix
+  matrix[N,K] X;                          //model matrix
+  vector[N] y;                            //response variable
+  real<lower=0> B0_diag;                  //parameters for priors see Gibbs sampler above
+  real b0_mu;
+  real C0;
+  real c0;
 }
 parameters {
-  vector[K] beta; //regression parameters - column vector by default
-  real<lower=0> sigma; //the standard deviation
+  vector[K] beta;                         //regression parameters - column vector by default
+  real<lower=0> sigma;                    //standard deviation
 }
 model {  
-  beta[1] ~ normal(0, 1000); //prior for the intercept following Gelman 2008
-  
-  for(i in 2:K)
-    beta[i] ~ normal(0, 1000);//prior for the slopes following Gelman 2008
+  sigma ~ inv_gamma(c0, C0);
+  beta[1] ~ normal(b0_mu, sigma*B0_diag);        // intercept
+  for(i in 2:K) 
+    beta[i] ~ normal(b0_mu, sigma*B0_diag);      // coefficients regressors
 
   y ~ normal(X * beta, sigma);
 }
 ```
 
+After defining the model, we need to pass our parameters and data to actually sample from it:
 ```{r stan model fitting}
 # Create model matrix for Stan
-X = model.matrix(~ kms + PetrolPrice + VanKilled + law + month, data = data_seatbelts)
-head(as.tibble(X))
-y = data_seatbelts$DriversKilled
+X = model.matrix(~ PetrolPrice + VanKilled + law + month + time_index, data = data_seatbelts)
+y = log(data_seatbelts$DriversKilled) - log(data_seatbelts$kms)
 N = nrow(data_seatbelts)
 K = ncol(X)
 
-model_vanilla_test = sampling(vanilla_regression, data = list(N = N, K = K, y = y, X = X),
-                              chains = 2, iter = 10000, seed = 20170711, cores = 2, control = list(max_treedepth = 10))
+model_vanilla_test = sampling(vanilla_regression, data = list(N = N, K = K, y = y, X = X, 
+                                                              B0_diag = 1000, b0_mu = 0, C0 = 1, c0 = 1),
+                              chains = 1, cores = 2, iter = 10000, seed = 20170711, 
+                              control = list(max_treedepth = 10)
+                              )
 ```
 
-```{r diagnostics}
-pairs(model_vanilla_test)
-summary(model_vanilla_test)
+```{r model results}
+# pairs(model_vanilla_test)
+broom::tidyMCMC(model_vanilla_test, conf.int = T)
 ```
+The printed confidence intervals correspond to the 2.5%-97.5% credible interval and the estimate column represents the posterior mean. Fortunately, the results are again very similar to what we got from our first two methods (Note: LAW = beta[4], since I started indexing at 1 in this case, to add to general confusion:)
 
+Stan also offers a formula interface that allows to specify simple models with independence priors and a variance with a flat improper uniform prior on $(0, \infty)$ (correct me if I am wrong, but I think that is the default).
 
 ```{r vanilla regression}
-model_glm_vanilla = stan_glm(formula = DriversKilled ~ kms + PetrolPrice + VanKilled + law + month,
+model_glm_vanilla = stan_glm(formula = log(DriversKilled) - log(kms) ~ PetrolPrice + VanKilled + 
+                               law + month + time_index,
                       data = data_seatbelts,
                       family = gaussian,
+                      prior = normal(0,1000),
+                      prior_intercept = normal(0,1000),
+                      chains = 2,
+                      cores = 2,
+                      seed = 20170711
+                      )
+
+summary(model_glm_vanilla)
+```
+Again, the results are pretty similar, despite the fact that we used independent priors this time. The formula interface from package `stanarm` offers less choice regarding model specification, but makes up for it by offering a convenient wrapper around Stan that is easy to learn for all R users that are familiar with formulas in `lm()` and friends.
+
+For the rest of the project we will stick to `stanarm` to do in-depth analysis. 
+
+#### Model diagnostics
+
+Stan provides an interactive web app for model diagnostics written with the Shiny framework created by the amazing folks at RStudio. Simply call `launch_shinystan(<your_fitted_model_here>)` to explore diagnostics and model fit statistics.
+
+The `rstanarm` package is pretty convenient in that it automatically checks whether the chains converge or not. In this case there was no error and a quick check of the trace plots confirms that the chains look pretty good. One possible way to monitor convergence is the Rhat statistic. From the rstanarm vignette: Rhat "...measures the ratio of the average variance of the draws within each chain to the variance of the pooled draws across chains; if all chains are at equilibrium, these will be the same and Rhat will be one. If the chains have not converged to a common distribution, the Rhat statistic will tend to be greater than one." In our case, Rhat is always 1, so everything appears to be fine.
+
+We will evaluate model fit programmatically. First, let's see how well the model fits in-sample:
+```{r vanilla regression in-sample fit}
+y_rep = posterior_predict(model_glm_vanilla)
+dim(y_rep)
+```
+
+We got `r dim(y_rep)[1]` simulated points for each observation, in our case 192. Let's do some plots:
+```{r diagnostic plots}
+data_plot = as.data.frame(y_rep) %>%
+  tidyr::gather(., key = index, value = val, 1:192) %>%
+  mutate(index = as.numeric(index)) %>%
+  group_by(index) %>%
+  summarise(Q0.01 = quantile(val, probs = 0.01),
+            mean = mean(val),
+            Q0.99 = quantile(val, probs = 0.99)
+            )
+
+
+ggplot(data_plot) +
+  ## in-sample prediction
+  geom_ribbon(aes(x = index, ymin = Q0.01, ymax = Q0.99), fill = "lightblue") +
+  geom_line(aes(x = index, y = mean), col = "blue") +
+  ## actual series
+  geom_line(data = data_seatbelts, aes(x = time_index, y = log(DriversKilled) - log(kms))) +
+  ggtitle("Posterior mean (blue) tracks actual series (black) closely",
+          "Ribbon shows Q0.01 - Q0.99 credible interval")
+```
+
+```{r accuracy stats vanilla regression}
+pred = data_plot$mean
+actual = with(data_seatbelts, log(DriversKilled) - log(kms))
+print(paste0("RMSE = ", sqrt(mean((pred - actual)^2))))
+print(paste0("MAPE = ", mean( abs((pred - actual)/actual))))
+```
+According to research by [Tofallis](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2635088) MAPE is systematically biased towards predictions that are too low. He recommends the log-accuracy-ratio to avoid bias, so we include the mean-log-accuracy-ratio for comparison:
+```{r log-accuracy ratio}
+print(paste0("MLAR = ", mean(log(pred/actual))))
+```
+
+**including acf und pacf ?**
+
+#### Extending vanilla model
+
+While the model appears to perform quite well, we will nevertheless extend it by allowing first-order serial correlation:
+$$\begin{align*}
+Y_t &= \beta_0 + \beta_1 X_{1,t} + \dots + \beta_k X_{k,t} + u_t \\
+u_t & = \rho u_{t-1} + v_t,~~v_t \sim \mathcal{N}(0, \sigma^2)
+\end{align*}$$
+
+We will assume that the posterior is given by, abusing notation:
+$$p(\beta, \sigma^2, \rho|y) = \mathcal{N}(y | \beta, \sigma^2, \rho) \times \mathcal{N}(\beta|\sigma^2) \times \mathcal{IG}(\sigma^2) \times \mathcal{B}(\rho)$$
+meaning we assume that $\rho$ is independent of both $\beta$ and $\sigma$.
+
+```{stan output.var="extended_vanilla_regression"}
+data {
+  int<lower=0> N;                         //number of observations
+  int<lower=0> K;                         //number of columns (i.e. regressors) in the model matrix
+  matrix[N,K] X;                          //model matrix
+  vector[N] y;                            //response variable
+  real<lower=0> B0_diag;                  //parameters for priors see Gibbs sampler above
+  real b0_mu;
+  real C0;
+  real c0;
+}
+parameters {
+  vector[K] beta;                         //regression parameters - column vector by default
+  real<lower=0> sigma;                    //standard deviation
+  real<lower = 0, upper = 1> rho;        //correlation coefficient error term
+}
+model {  
+  real error;
+  real rho_scaled;
+  sigma ~ inv_gamma(c0, C0);
+  rho ~ beta(4, 2);                      // so that scaled beta is centered at roughly 0.5
+  
+  rho_scaled = 2*rho - 1;                // scaling beta to live on (-1, 1)
+  error = 0;
+  
+  beta[1] ~ normal(b0_mu, sigma*B0_diag);        // intercept
+  for(i in 2:K) 
+    beta[i] ~ normal(b0_mu, sigma*B0_diag);      // coefficients regressors
+  
+  for(n in 1:N) {
+    y[n] ~ normal(X[n]*beta + error, sigma);      //if a is a matrix, a[m] picks out row m of that matrix
+    
+    error = rho_scaled * (y[n] - (X[n]*beta));
+  }
+}
+```
+
+After defining the model, we need to pass our parameters and data to actually sample from it:
+```{r stan model fitting serial correlation errors}
+# Create model matrix for Stan
+X = model.matrix(~ PetrolPrice + VanKilled + law + month + time_index, data = data_seatbelts)
+y = log(data_seatbelts$DriversKilled) - log(data_seatbelts$kms)
+N = nrow(data_seatbelts)
+K = ncol(X)
+
+model_extended_vanilla = sampling(extended_vanilla_regression, data = list(N = N, K = K, y = y, X = X, 
+                                                              B0_diag = 1000, b0_mu = 0, C0 = 1, c0 = 1),
+                              chains = 1, cores = 2, iter = 10000, seed = 20170711, 
+                              control = list(max_treedepth = 10)
+                              )
+```
+```{r summary extended model}
+broom::tidyMCMC(model_extended_vanilla, conf.int = T)
+```
+
+It turns out that rho is actually quite high with a value of around 0.85. So there is indeed quite some serial correlation in the errors.
+```{r}
+# shinystan::launch_shinystan(model_extended_vanilla)
+traceplot(model_extended_vanilla, pars = c("beta[4]", "rho")) +
+  theme_hc() +
+  ggtitle("Traceplots",
+          "No apparent convergence issues")
+```
+
+Both chains seem to mix well. So convergence should be fine. As a final plausibility check, let's compare the results with the ARIMAX estimates:
+```{r ARIMAX estimates}
+## Note: be careful to remove intercept!
+X_temp = model.matrix(~ PetrolPrice + VanKilled + law + month + time_index, data = data_seatbelts)[,-1]
+y = log(data_seatbelts$DriversKilled) - log(data_seatbelts$kms)
+
+forecast::Arima (y, order=c(0, 0, 1), xreg=X_temp)
+```
+
+The MA(1) term is markedly smaller than in the Bayesian setting and even changing the prior to put more weight on parameter values around 0.47 does not change that. This is definitely worth looking into more closely. Other than that, the findings are pretty similar. Except for the PetrolPrice coefficient and the MA(1) term, all coefficients are about the same.
+
+In the next section, we are going to explore count models and start off with the Poission model:
+
+### Poisson regression
+
+Let's specify a simple Poisson regression model:
+```{r rstan glm poisson, message=0}
+model_glm = stan_glm(formula = DriversKilled ~ PetrolPrice + VanKilled + law + month + time_index, offset = log(kms),
+                      data = data_seatbelts,
+                      family = "poisson",
                       prior = cauchy(0,2.5),
                       prior_intercept = cauchy(0,10),
                       chains = 2,
@@ -226,30 +496,115 @@ model_glm_vanilla = stan_glm(formula = DriversKilled ~ kms + PetrolPrice + VanKi
                       seed = 20170711
                       )
 
-summary(model_glm_vanilla)
-print(ols <- lm(DriversKilled ~ kms + PetrolPrice + VanKilled + law + month, data = data_seatbelts)) # same result as in lm
+summary(model_glm)
 ```
 
+The effect of the seatbelt law is still negative, although the far right tip of the distribution includes 0.
 
-
-### Poisson regression
-
-```{r rstan glm poisson, message=0}
-model_glm = stan_glm(formula = DriversKilled ~ PetrolPrice + VanKilled + month + year, offset = log(kms),
-                      data = data_pretreat,
+How robust is the effect if we add additional explanatory variables?
+```{r cound model with airbag + abs}
+model_glm_ext = stan_glm(formula = DriversKilled ~ PetrolPrice + VanKilled + law + 
+                           eABS + airbag +  month + time_index, offset = log(kms),
+                      data = data_seatbelts,
                       family = "poisson",
                       prior = cauchy(0,2.5),
                       prior_intercept = cauchy(0,10),
-                      chains = 5,
+                      adapt_delta = 0.98,
+                      chains = 2,
                       cores = 2,
                       seed = 20170711
                       )
 
-summary(model_glm)
+summary(model_glm_ext)
+```
+While the seatbelt law still has the expected sign and magnitude, eABS and aribag are not showing any effect (or even a slightly positive one?).
+```{r cound regression in-sample fit}
+y_rep = posterior_predict(model_glm_ext)
+dim(y_rep)
 ```
 
+We got `r dim(y_rep)[1]` simulated points for each observation, in our case 192. Let's do some plots:
+```{r count diagnostic plots}
+data_plot = as.data.frame(y_rep) %>%
+  tidyr::gather(., key = index, value = val, 1:192) %>%
+  mutate(index = as.numeric(index)) %>%
+  group_by(index) %>%
+  summarise(Q0.01 = quantile(val, probs = 0.01),
+            mean = mean(val),
+            Q0.99 = quantile(val, probs = 0.99)
+            )
 
-### Estimation of counts with Poisson regression
+
+ggplot(data_plot) +
+  ## in-sample prediction
+  geom_ribbon(aes(x = index, ymin = Q0.01, ymax = Q0.99), fill = "lightblue") +
+  geom_line(aes(x = index, y = mean), col = "blue") +
+  ## actual series
+  geom_line(data = data_seatbelts, aes(x = time_index, y = DriversKilled)) +
+  ggtitle("Posterior mean (blue) tracks actual series (black) closely",
+          "Ribbon shows Q0.01 - Q0.99 credible interval")
+```
+```{r accuracy stats count regression}
+pred = data_plot$mean
+actual = with(data_seatbelts, DriversKilled)
+print(paste0("RMSE = ", sqrt(mean((pred - actual)^2))))
+print(paste0("MAPE = ", mean( abs((pred - actual)/actual))))
+print(paste0("MLAR = ", mean(log(pred/actual))))
+```
+
+It appears that the prediction error is larger when we use the count model as compared to the vanilla Bayes model before.
+
+Maybe a negative-binomial model performs better?
+```{r negative binomial with airbag + abs}
+model_glm_negb = stan_glm(formula = DriversKilled ~ PetrolPrice + VanKilled + law + 
+                           eABS + airbag +  month + time_index, offset = log(kms),
+                      data = data_seatbelts,
+                      family = "neg_binomial_2",
+                      prior = cauchy(0,2.5),
+                      prior_intercept = cauchy(0,10),
+                      adapt_delta = 0.98,
+                      chains = 2,
+                      cores = 2,
+                      seed = 20170711
+                      )
+
+summary(model_glm_negb)
+```
+```{r negb regression in-sample fit}
+y_rep = posterior_predict(model_glm_negb)
+dim(y_rep)
+```
+
+```{r diagnostic plots negb}
+data_plot = as.data.frame(y_rep) %>%
+  tidyr::gather(., key = index, value = val, 1:192) %>%
+  mutate(index = as.numeric(index)) %>%
+  group_by(index) %>%
+  summarise(Q0.01 = quantile(val, probs = 0.01),
+            mean = mean(val),
+            Q0.99 = quantile(val, probs = 0.99)
+            )
+
+
+ggplot(data_plot) +
+  ## in-sample prediction
+  geom_ribbon(aes(x = index, ymin = Q0.01, ymax = Q0.99), fill = "lightblue") +
+  geom_line(aes(x = index, y = mean), col = "blue") +
+  ## actual series
+  geom_line(data = data_seatbelts, aes(x = time_index, y = DriversKilled)) +
+  ggtitle("Posterior mean (blue) tracks actual series (black) closely",
+          "Ribbon shows Q0.01 - Q0.99 credible interval")
+```
+
+```{r accuracy stats negb regression}
+pred = data_plot$mean
+actual = with(data_seatbelts, DriversKilled)
+print(paste0("RMSE = ", sqrt(mean((pred - actual)^2))))
+print(paste0("MAPE = ", mean( abs((pred - actual)/actual))))
+print(paste0("MLAR = ", mean(log(pred/actual))))
+```
+
+The fit does not really improve when we use the negative-binomial model, so overdispersion does not seem to be an issue, which makes intuitive sense just by looking at the plots.
 
 ### Sensitivity analysis
 #### Likelihood + Prior + Posterior plots
@@ -264,3 +619,9 @@ summary(model_glm)
 - Trend vs. differences?
 - seasonal behavior with sine/cosine?
 - change in petrol price?
+- can I simply go back to #DriversKilled with Bayesian regression although we estimated log()? ->YES! We have sample estimates and we can transform them however we like
+- posterior predictive distribution?
+
+### Questions:
+- Rhat -> what happens if there is only one chain? is the variance of parts of the chain checked against itself?
+- Serial correlation -> correctly estimated?
