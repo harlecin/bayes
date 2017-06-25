@@ -430,8 +430,8 @@ draws = 10000
 burnin =  1000
 
 ## initialize some space to hold results:
-res <- matrix(as.numeric(NA), nrow=draws+burnin+1, ncol=p+2)
-colnames(res) <- c(paste("beta", 0:(p-1), sep='_'), "sigma2", "rho")
+res = matrix(as.numeric(NA), nrow=draws+burnin+1, ncol=p+2)
+colnames(res) = c(paste("beta", 0:(p-1), sep='_'), "sigma2", "rho")
 
 # define priors
 ## prior values betas
@@ -441,8 +441,8 @@ b0 = rep(0, p)
 
 ## prior value sigma
 ### sigma2 ~ IG(c0, C0)
-C0 = 1
-c0 = 1
+C0 = 0.1
+c0 = 0.1
 
 ## prior value rho
 ### rho ~ normal(p0, P0) -> Attention: needs to be corrected later to only allow p in (-1, 1)
@@ -456,7 +456,9 @@ res[1, ] = c(rep(1, p+1), 0)
 ## precalculating values
   B0_inv = solve(B0)
 
+comparison = matrix(as.numeric(NA), nrow=draws+burnin+1, ncol=4)
 ## sampling steps
+
 for (i in 2:(draws+burnin+1)) {
   ## remove serial correlation
   #i = 2
@@ -467,9 +469,14 @@ for (i in 2:(draws+burnin+1)) {
   X_star = X[-1, ] - rho*head(X, -1)
   
   ## beta sampling
-  bn = solve(B0_inv + 1/sigma2 * t(X_star) %*% X_star) %*% (B0_inv %*% b0 + 1/sigma2 * t(X_star) %*% y_star)
   Bn = solve(B0_inv + 1/sigma2 * t(X_star) %*% X_star)
+  bn = solve(B0_inv + 1/sigma2 * t(X_star) %*% X_star) %*% (B0_inv %*% b0 + 1/sigma2 * t(X_star) %*% y_star)
+
+  Bn_test = solve(1/sigma2 * t(X_star) %*% X_star + B0_inv)
+  bn_test = Bn_test %*%  (1/sigma2 * t(X_star) %*% y_star + B0_inv %*% b0)
   
+  comparison[i-1, 1] = sum((Bn - Bn_test)^2)
+  comparison[i-1, 2] = sum((bn - bn_test)^2)
   ## block draw betas:
   res[i,1:p] <- mvtnorm::rmvnorm(1, bn, Bn)
    
@@ -477,23 +484,27 @@ for (i in 2:(draws+burnin+1)) {
   ## calculate model residuals given drawn betas
   u = y - X %*% res[i, 1:p]
   u_L1 = head(u, -1)
-  
-  p_star = solve(1/P0 + 1/sigma2 * t(u_L1) %*% u_L1) %*% (1/P0 * p0 + 1/sigma2 * t(u_L1) %*% u[-1])
-  z_star = solve(1/P0 + 1/sigma2 * t(u_L1) %*% u_L1)
 
+  z_star = solve(1/P0 + 1/sigma2 * t(u_L1) %*% u_L1)
+  p_star = solve(1/P0 + 1/sigma2 * t(u_L1) %*% u_L1) %*% (1/P0 * p0 + 1/sigma2 * t(u_L1) %*% u[-1])
+  
+  z_star_test = solve(1/sigma2 * t(u_L1) %*% u_L1 + 1/P0)
+  p_star_test = z_star %*% (1/sigma2 * t(u_L1) %*% u[-1] + 1/P0 * p0)
+  
+  comparison[i-1, 3] = sum((z_star - z_star_test)^2)
+  comparison[i-1, 4] = sum((p_star - p_star_test)^2)
+  
   ## Important: we need to make sure that rho in [-1, 1]
   run = TRUE
   while(run) {
     res[i, p+2] = rnorm(1, p_star, z_star)
     run = (res[i, p+2] < -1 | 1 < res[i, p+2])
   }
-  
-  resids = y_star - X_star %*% res[i, 1:p]
 
   ## sigma^2 sampling
-  cn = (c0 + n)/2
-  Cn = C0 + crossprod(y_star - X_star %*% res[i, 1:p])
-  res[i, p+1] <- 1/rgamma(1, shape = cn/2, rate = Cn/2)
+  cn = c0 + n/2 + p/2
+  Cn = C0 + 0.5 * (crossprod(y_star - X_star %*% res[i, 1:p]) + t(res[i, 1:p] - b0) %*% B0_inv %*% (res[i, 1:p] - b0))
+  res[i, p+1] <- 1/rgamma(1, shape = cn, rate = Cn)
 }
   
 colMeans(res)
@@ -726,3 +737,4 @@ The fit does not really improve when we use the negative-binomial model, so over
 - Serial correlation -> correctly estimated?
 - Why do we assume that the betas are all independent of each other?
 - z_star, B0_star ... sigma^2 or sigma?
+- How do we know that we can simply use the N(.,.) formula for the betas again for rho? 
