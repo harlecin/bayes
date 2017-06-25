@@ -463,7 +463,7 @@ res[1, ] = c(rep(1, p+1), 0)
   B0_inv = solve(B0)
 
 ## sampling steps
-for (i in 2:(draws+burnin+1)) { 
+for (i in 2:(draws+burnin+1)) { #
   ## remove serial correlation
   # i = 2
   rho = res[i-1, p+2]
@@ -473,6 +473,10 @@ for (i in 2:(draws+burnin+1)) {
   X_star = X[-1, ] - rho*head(X, -1)
   
   ## beta sampling
+  # Bn = solve(B0_inv + 1/sigma2 * t(X_star) %*% X_star)
+  # bn = solve(B0_inv + 1/sigma2 * t(X_star) %*% X_star) %*% (B0_inv %*% b0 + 1/sigma2 * t(X_star) %*% y_star)
+
+  
   Bn = solve(1/sigma2 * t(X_star) %*% X_star + 1/sigma2*B0_inv)
   bn = Bn %*% (1/sigma2 * t(X_star)%*%y_star + 1/sigma2*B0_inv %*% b0)
   
@@ -485,22 +489,23 @@ for (i in 2:(draws+burnin+1)) {
   u = y - X %*% res[i, 1:p]
   u_L1 = head(u, -1)
   
-  p_star = solve(1/P0 + 1/sigma2 * t(u_L1) %*% u_L1) %*% (1/P0 * p0 + 1/sigma2 * t(u_L1) %*% u[-1])
-  z_star = solve(1/P0 + 1/sigma2 * t(u_L1) %*% u_L1)
-
+  # z_star_temp = solve(1/P0 + 1/sigma2 * t(u_L1) %*% u_L1)
+  # p_star_temp = solve(1/P0 + 1/sigma2 * t(u_L1) %*% u_L1) %*% (1/P0 * p0 + 1/sigma2 * t(u_L1) %*% u[-1])
+  
+  z_star = solve(1/sigma2 * t(u_L1) %*% u_L1 + 1/sigma2*1/P0)
+  p_star = z_star %*% (1/sigma2 * t(u_L1) %*% u[-1] + 1/sigma2 * 1/P0 * p0)
+  
   ## Important: we need to make sure that rho in [-1, 1]
   run = TRUE
   while(run) {
     res[i, p+2] = rnorm(1, p_star, z_star)
     run = (res[i, p+2] < -1 | 1 < res[i, p+2])
   }
-  
-  resids = y_star - X_star %*% res[i, 1:p]
 
   ## sigma^2 sampling
-  cn = (c0 + n)/2
-  Cn = C0 + crossprod(y_star - X_star %*% res[i, 1:p])
-  res[i, p+1] <- 1/rgamma(1, shape = cn/2, rate = Cn/2)
+  cn = c0 + n/2 + p/2
+  Cn = C0 + 0.5 * (crossprod(y_star - X_star %*% res[i, 1:p]) + t(res[i, 1:p] - b0) %*% B0_inv %*% (res[i, 1:p] - b0))
+  res[i, p+1] <- 1/rgamma(1, shape = cn, rate = Cn)
 }
   
 colMeans(res)
