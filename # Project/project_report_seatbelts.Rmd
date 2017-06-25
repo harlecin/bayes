@@ -420,97 +420,104 @@ This suggests that our Gibbs sampler should look like this:
 
 **attention: sampler assumes time-series is going from 1 to last vector entry!**
 ```{r Gibbs sampler serial correlation}
+gibbs_corr_err <- function(y, X, B0_diag = 10^2, b0_mu = 0, c0 = 0.1, C0 = 0.1, p0 = 0, P0 = 1) {
+  n = nrow(X)               # no. observations
+  p = ncol(X)               # no. predictors incl. intercept
+  
+  draws = 10000
+  burnin =  1000
+  
+  ## initialize some space to hold results:
+  res = matrix(as.numeric(NA), nrow=draws+burnin+1, ncol=p+2)
+  colnames(res) = c(paste("beta", 0:(p-1), sep='_'), "sigma2", "rho")
+  
+  # define priors
+  ## prior values betas
+  ### beta ~ normal(b0, B0)
+  B0 = diag(B0_diag, nrow = p, ncol = p)
+  b0 = rep(b0_mu, p)
+  
+  ## prior value sigma
+  ### sigma2 ~ IG(c0, C0)
+  C0
+  c0
+  
+  ## prior value rho
+  ### rho ~ normal(p0, P0) -> Attention: needs to be corrected later to only allow p in (-1, 1)
+  p0
+  P0
+  
+  ## starting values coefficients for sampler
+  ### beta_i = 1, sigma2 = 1, rho = 0
+  res[1, ] = c(rep(1, p+1), 0)
+  
+  ## precalculating values
+    B0_inv = solve(B0)
+  
+  comparison = matrix(as.numeric(NA), nrow=draws+burnin+1, ncol=4)
+  ## sampling steps
+  
+  for (i in 2:(draws+burnin+1)) {
+    ## remove serial correlation
+    #i = 2
+    rho = res[i-1, p+2]
+    sigma2 = res[i-1, p+1]
+    
+    y_star = y[-1] - rho*head(y, -1)
+    X_star = X[-1, ] - rho*head(X, -1)
+    
+    ## beta sampling
+    Bn = solve(1/sigma2 * t(X_star) %*% X_star + B0_inv)
+    bn = Bn %*%  (1/sigma2 * t(X_star) %*% y_star + B0_inv %*% b0)
+    
+    ## block draw betas:
+    res[i,1:p] <- mvtnorm::rmvnorm(1, bn, Bn)
+     
+    ## rho sampling
+    ## calculate model residuals given drawn betas
+    u = y - X %*% res[i, 1:p]
+    u_L1 = head(u, -1)
+  
+    z_star = solve(1/sigma2 * t(u_L1) %*% u_L1 + 1/P0)
+    p_star = z_star %*% (1/sigma2 * t(u_L1) %*% u[-1] + 1/P0 * p0)
+    
+    ## Important: we need to make sure that rho in [-1, 1]
+    run = TRUE
+    while(run) {
+      res[i, p+2] = rnorm(1, p_star, z_star)
+      run = (res[i, p+2] < -1 | 1 < res[i, p+2])
+    }
+  
+    ## sigma^2 sampling
+    cn = c0 + n/2 + p/2
+    Cn = C0 + 0.5 * (crossprod(y_star - X_star %*% res[i, 1:p]) + t(res[i, 1:p] - b0) %*% B0_inv %*% (res[i, 1:p] - b0))
+    res[i, p+1] <- 1/rgamma(1, shape = cn, rate = Cn)
+  }
+  
+  res
+}
+```
+
+Let's try the sampler:
+```{r gibbs sampler with serially correlated errors}
 X = model.matrix(~ PetrolPrice + VanKilled + law + month + time_index, data = data_seatbelts)
 y = log(data_seatbelts$DriversKilled) - log(data_seatbelts$kms)
 
-n = nrow(X)               # no. observations
-p = ncol(X)               # no. predictors incl. intercept
-
-draws = 10000
-burnin =  1000
-
-## initialize some space to hold results:
-res = matrix(as.numeric(NA), nrow=draws+burnin+1, ncol=p+2)
-colnames(res) = c(paste("beta", 0:(p-1), sep='_'), "sigma2", "rho")
-
-# define priors
-## prior values betas
-### beta ~ normal(b0, B0)
-B0 = diag(100, nrow = p, ncol = p)
-b0 = rep(0, p)
-
-## prior value sigma
-### sigma2 ~ IG(c0, C0)
-C0 = 0.1
-c0 = 0.1
-
-## prior value rho
-### rho ~ normal(p0, P0) -> Attention: needs to be corrected later to only allow p in (-1, 1)
-p0 = 0
-P0 = 1
-
-## starting values coefficients for sampler
-### beta_i = 1, sigma2 = 1, rho = 0
-res[1, ] = c(rep(1, p+1), 0)
-
-## precalculating values
-  B0_inv = solve(B0)
-
-comparison = matrix(as.numeric(NA), nrow=draws+burnin+1, ncol=4)
-## sampling steps
-
-for (i in 2:(draws+burnin+1)) {
-  ## remove serial correlation
-  #i = 2
-  rho = res[i-1, p+2]
-  sigma2 = res[i-1, p+1]
-  
-  y_star = y[-1] - rho*head(y, -1)
-  X_star = X[-1, ] - rho*head(X, -1)
-  
-  ## beta sampling
-  Bn = solve(B0_inv + 1/sigma2 * t(X_star) %*% X_star)
-  bn = solve(B0_inv + 1/sigma2 * t(X_star) %*% X_star) %*% (B0_inv %*% b0 + 1/sigma2 * t(X_star) %*% y_star)
-
-  Bn_test = solve(1/sigma2 * t(X_star) %*% X_star + B0_inv)
-  bn_test = Bn_test %*%  (1/sigma2 * t(X_star) %*% y_star + B0_inv %*% b0)
-  
-  comparison[i-1, 1] = sum((Bn - Bn_test)^2)
-  comparison[i-1, 2] = sum((bn - bn_test)^2)
-  ## block draw betas:
-  res[i,1:p] <- mvtnorm::rmvnorm(1, bn, Bn)
-   
-  ## rho sampling
-  ## calculate model residuals given drawn betas
-  u = y - X %*% res[i, 1:p]
-  u_L1 = head(u, -1)
-
-  z_star = solve(1/P0 + 1/sigma2 * t(u_L1) %*% u_L1)
-  p_star = solve(1/P0 + 1/sigma2 * t(u_L1) %*% u_L1) %*% (1/P0 * p0 + 1/sigma2 * t(u_L1) %*% u[-1])
-  
-  z_star_test = solve(1/sigma2 * t(u_L1) %*% u_L1 + 1/P0)
-  p_star_test = z_star %*% (1/sigma2 * t(u_L1) %*% u[-1] + 1/P0 * p0)
-  
-  comparison[i-1, 3] = sum((z_star - z_star_test)^2)
-  comparison[i-1, 4] = sum((p_star - p_star_test)^2)
-  
-  ## Important: we need to make sure that rho in [-1, 1]
-  run = TRUE
-  while(run) {
-    res[i, p+2] = rnorm(1, p_star, z_star)
-    run = (res[i, p+2] < -1 | 1 < res[i, p+2])
-  }
-
-  ## sigma^2 sampling
-  cn = c0 + n/2 + p/2
-  Cn = C0 + 0.5 * (crossprod(y_star - X_star %*% res[i, 1:p]) + t(res[i, 1:p] - b0) %*% B0_inv %*% (res[i, 1:p] - b0))
-  res[i, p+1] <- 1/rgamma(1, shape = cn, rate = Cn)
-}
-  
-colMeans(res)
+res_serial = gibbs_corr_err(y, X)
+colMeans(res_serial)
 ```
 
-----
+The coefficients look pretty similar to what we had in the no-autocorrelation sampler, which is reassuring, since autocorrelation should only affect the standard-errors of the coefficients not the coefficients. Let's compare the results with an ARIMAX model using the same model specification:
+```{r ARIMAX estimates}
+## Note: be careful to remove intercept!
+X_temp = model.matrix(~ PetrolPrice + VanKilled + law + month + time_index, data = data_seatbelts)[,-1]
+y = log(data_seatbelts$DriversKilled) - log(data_seatbelts$kms)
+
+forecast::Arima (y, order=c(0, 0, 1), xreg=X_temp)
+```
+Almost spot on:)
+
+How would this model look like in Stan?
 
 We will assume that the posterior is given by, abusing notation:
 $$p(\beta, \sigma^2, \rho|y) = \mathcal{N}(y | \beta, \sigma^2, \rho) \times \mathcal{N}(\beta|\sigma^2) \times \mathcal{IG}(\sigma^2) \times \mathcal{B}(\rho)$$
@@ -579,16 +586,7 @@ traceplot(model_extended_vanilla, pars = c("beta[4]", "rho")) +
           "No apparent convergence issues")
 ```
 
-Both chains seem to mix well. So convergence should be fine. As a final plausibility check, let's compare the results with the ARIMAX estimates:
-```{r ARIMAX estimates}
-## Note: be careful to remove intercept!
-X_temp = model.matrix(~ PetrolPrice + VanKilled + law + month + time_index, data = data_seatbelts)[,-1]
-y = log(data_seatbelts$DriversKilled) - log(data_seatbelts$kms)
-
-forecast::Arima (y, order=c(0, 0, 1), xreg=X_temp)
-```
-
-The MA(1) term is markedly smaller than in the Bayesian setting and even changing the prior to put more weight on parameter values around 0.47 does not change that. This is definitely worth looking into more closely. Other than that, the findings are pretty similar. Except for the PetrolPrice coefficient and the MA(1) term, all coefficients are about the same.
+Both chains seem to mix well. So convergence should be fine. However, the MA(1) term is markedly smaller than in the Bayesian setting and even changing the prior to put more weight on parameter values around 0.47 does not change that. This is definitely worth looking into more closely. Other than that, the findings are pretty similar. Except for the PetrolPrice coefficient and the MA(1) term, all coefficients are about the same.
 
 In the next section, we are going to explore count models and start off with the Poission model:
 
