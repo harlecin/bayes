@@ -5,6 +5,7 @@ subtitle: Does forcing people to wear seatbelts save lives?
 output:
   html_notebook: default
   html_document: default
+header-includes: \usepackage{amssymb} \usepackage{mathtools}
 ---
 
 Measuring the effect of an intervention on some metric is an important problem in many areas of business and academia. Imagine, you want to know the effect of a recently launched advertising campaign on product sales. In an ideal setting, you would have a treatment and a control group so that you can measure the effect of the campaign. Unfortunately, many times it is not possible or feasible to run a controlled experiment.
@@ -401,10 +402,122 @@ Y_t &= \beta_0 + \beta_1 X_{1,t} + \dots + \beta_k X_{k,t} + u_t \\
 u_t & = \rho u_{t-1} + v_t,~~v_t \sim \mathcal{N}(0, \sigma^2)
 \end{align*}$$
 
+Like in the previous section we will start with coding our own Gibbs sampler and then we will implement the model in Stan.
+
+The following derivation closely follows the 'CCBS Technical Handbook No. 4 - Applied Bayesian econometrics for central bankers' by Blake and Mumatz (2012) from the Bank of England. 
+
+From the model above we can already see that if we knew $\rho$ than we could get easily get rid of the serial correlation by doing the following:
+$$\begin{align*}
+Y_t &= \beta_0 + \beta_1 X_{1,t} + \dots + \beta_k X_{k,t} + u_t \\
+- \rho Y_{t-1} &= \rho \beta_0 + \rho \beta_1 X_{1,t-1} + \dots + \rho \beta_k X_{k,t-1} + \rho u_{t-1} \\
+ \hline  \\
+Y_t - \rho Y_{t-1} & = \beta_0 (1 - \rho) + \beta_1 (X_{1,t} - X_{1,t-1}) + \dots + \beta_k (X_{k,t} - X_{k,t-1}) + \underbrace{(u_t - u_{t-1})}_{=\epsilon_t}
+\end{align*}$$
+
+The new model has serially uncorrelated errors. Now we are back in the simple linear regression framework. In other words: the conditional distribution of $\beta$ coefficients and $\sigma^2$ is as described in the previous section given that we know $\rho$.
+
+Now suppose we know the $\beta$ coefficients. In that case, $u_t = Y_t - X_t\beta_t$ and we can treat $u_t = \rho u_t + \epsilon_t$ as a linear regression model in $\u_t$. 
+
+This suggests that our Gibbs sampler should look like this:  
+
+1. Draw the $\beta$ coefficients conditional on knowing $\sigma^2$ and $\rho$ after serial correlation has been removed
+2. Afterwards, draw $\rho$ conditional on $\beta$ and $\sigma^2$
+3. Finally, conditional on $\beta$ and $\rho$, draw $\sigma$
+
+**attention: sampler assumes time-series is going from 1 to last vector entry!**
+```{r Gibbs sampler serial correlation}
+X = model.matrix(~ PetrolPrice + VanKilled + law + month + time_index, data = data_seatbelts)
+y = log(data_seatbelts$DriversKilled) - log(data_seatbelts$kms)
+
+n = nrow(X)               # no. observations
+p = ncol(X)               # no. predictors incl. intercept
+
+draws = 1000
+burnin =  100
+
+## initialize some space to hold results:
+res <- matrix(as.numeric(NA), nrow=draws+burnin+1, ncol=p+2)
+colnames(res) <- c(paste("beta", 0:(p-1), sep='_'), "sigma2", "rho")
+
+# define priors
+## prior values betas
+### beta ~ normal(b0, B0)
+B0 = diag(100, nrow = p, ncol = p)
+b0 = rep(0, p)
+
+## prior value sigma
+### sigma2 ~ IG(c0, C0)
+C0 = 1
+c0 = 1
+
+## prior value rho
+### rho ~ normal(p0, P0) -> Attention: needs to be corrected later to only allow p in (-1, 1)
+p0 = 0
+P0 = 1
+
+## starting values coefficients for sampler
+### beta_i = 1, sigma2 = 1, rho = 0
+res[1, ] = c(rep(1, p+1), 0)
+
+## remove serial correlation
+rho = res[1, p+2]
+
+y_star = (y - rho*lag(y, 1))[-1] # remove NA at beginning
+X_star = (X - rho*lag(X, 1))[-1]
+
+## precalculating values
+B0_inv = solve(B0)
+### (X*'X*+B0_inv)^(-1)
+pre1 = solve(crossprod(X_star) + B0_inv)
+
+### (X*'y* + B0_inv*b0)
+pre2 = t(X_star) %*% y_star + B0_inv %*% b0
+
+### cn = c0 + n/2 + p/2
+pre3 = c0 + n/2 + p/2
+
+## sampling steps
+for (i in 2:(draws+burnin+1)) {
+   ## Progress indicator:
+   #if (i%%100 == 0) cat("Iteration", i, "done.\n")
+   
+   ## beta sampling
+   Bn = res[i-1, p+1] * pre1
+   bn = Bn %*% (pre2/res[i-1,p+1])
+   ## block draw betas:
+   res[i,1:p] <- mvtnorm::rmvnorm(1, bn, Bn)
+   
+   ## rho sampling
+   ## calculate model residuals given drawn betas
+   beta_i = res[i, 1:p]
+   sigma2_i = res[i-1, p+1]
+   y_hat_L1 = head(X %*% beta_i, -1)
+   
+   u = y[-1] - y_hat_L1 
+   u_L1 = tail(u, -1)
+   
+   ### Note: u is of class 'matrix' and u[-1] is of class 'numeric' so we do not need t(u[-1]) for
+   ### the vector multiplication: u[-1] %*% u_L1 == t(u[-1]) %*% u_L1
+   p_star = solve(1/P0 + 1/sigma2_i * u[-1] %*% u_L1) %*% (1/P0 * p0 + 1/sigma2_i *  t(u[-1]) %*% u_L1)
+   z_star = solve(1/P0 + 1/sigma2_i * t(u_L1) %*% u_L1)
+
+   ## Important: we need to make sure that rho in [-1, 1]
+   run = TRUE
+   while(run) {
+    res[i, 18] = rnorm(1, p_star, z_star)
+    run = res[i, 18] < -1 | res[i, 18] > 1
+   }
+   
+   # sigma^2 sampling
+   Cn = C0 + .5*(crossprod(y_star - X_star %*% res[i, 1:p]) + t(res[i, 1:p] - b0) %*% B0_inv %*% (res[i, 1:p] - b0))
+   res[i, p+1] <- 1/rgamma(1, shape = pre3, rate = Cn)
+}
+```
+
+
 We will assume that the posterior is given by, abusing notation:
 $$p(\beta, \sigma^2, \rho|y) = \mathcal{N}(y | \beta, \sigma^2, \rho) \times \mathcal{N}(\beta|\sigma^2) \times \mathcal{IG}(\sigma^2) \times \mathcal{B}(\rho)$$
 meaning we assume that $\rho$ is independent of both $\beta$ and $\sigma$.
-
 ```{stan output.var="extended_vanilla_regression"}
 data {
   int<lower=0> N;                         //number of observations
@@ -625,3 +738,5 @@ The fit does not really improve when we use the negative-binomial model, so over
 ### Questions:
 - Rhat -> what happens if there is only one chain? is the variance of parts of the chain checked against itself?
 - Serial correlation -> correctly estimated?
+- Why do we assume that the betas are all independent of each other?
+- z_star, B0_star ... sigma^2 or sigma?
