@@ -127,8 +127,8 @@ It can be shown that the full conditional distributions of $\beta$ and $\sigma$ 
 
 - $\beta|\textbf{y}, \sigma^2 \sim \mathcal{N}(b_n, B_n)$ with  
   $$\begin{align*}
-  B_n &= \sigma^2 \overbrace{(X'X+B_0^{-1})^{-1}}^{=pre1} \\
-  b_n &= B_n \underbrace{\frac{1}{\sigma^2}(X'y+B_0^{-1}b_0)}_{=pre2}
+  B_n &= (\frac{1}{\sigma^2}X'X+B_0^{-1})^{-1}\\
+  b_n &= B_n (\frac{1}{\sigma^2}X'y+B_0^{-1}b_0)
   \end{align*}$$
 - $\sigma^2|\textbf{y}, \beta \sim \mathcal{c_n, C_n}$ with  
   $$\begin{align*}
@@ -162,14 +162,8 @@ gibbs_nig <- function(y, X, B0_diag = 10^2, b0_mu = 0, c0 = 1, C0 = 1) {
   
   ## precalculating values
   B0_inv = solve(B0)
-  ### (X'X+B0_inv)^(-1)
-  pre1 = solve(crossprod(X) + B0_inv)
   
-  ### (X'y + B0_inv*b0)
-  pre2 = t(X) %*% y + B0_inv %*% b0
-  
-  ### cn = c0 + n/2 + p/2
-  pre3 = c0 + n/2 + p/2
+  cn = c0 + n/2 + p/2
   
   ## sampling steps
   for (i in 2:(draws+burnin+1)) {
@@ -177,14 +171,14 @@ gibbs_nig <- function(y, X, B0_diag = 10^2, b0_mu = 0, c0 = 1, C0 = 1) {
    #if (i%%100 == 0) cat("Iteration", i, "done.\n")
    
    ## beta sampling
-   Bn = res[i-1, p+1] * pre1
-   bn = Bn %*% (pre2/res[i-1,p+1])
+    Bn = solve(1/res[i-1, p+1] * (t(X) %*% X) + B0_inv)
+    bn = Bn %*%  (1/res[i-1, p+1] * t(X) %*% y + B0_inv %*% b0)
    ## block draw betas:
    res[i,1:p] <- mvtnorm::rmvnorm(1, bn, Bn)
    
    # draw sigma^2:
    Cn = C0 + .5*(crossprod(y - X %*% res[i, 1:p]) + t(res[i, 1:p] - b0) %*% B0_inv %*% (res[i, 1:p] - b0))
-   res[i, p+1] <- 1/rgamma(1, shape = pre3, rate = Cn)
+   res[i, p+1] <- 1/rgamma(1, shape = cn, rate = Cn)
   }
   
   ## throw away initial value and burn-in:
