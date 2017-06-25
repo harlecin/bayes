@@ -463,9 +463,9 @@ res[1, ] = c(rep(1, p+1), 0)
   B0_inv = solve(B0)
 
 ## sampling steps
-for (i in 2:(draws+burnin+1)) {
+for (i in 2:(draws+burnin+1)) { 
   ## remove serial correlation
-  #i = 2
+  # i = 2
   rho = res[i-1, p+2]
   sigma2 = res[i-1, p+1]
   
@@ -473,9 +473,10 @@ for (i in 2:(draws+burnin+1)) {
   X_star = X[-1, ] - rho*head(X, -1)
   
   ## beta sampling
-  bn = solve(B0_inv + 1/sigma2 * t(X_star) %*% X_star) %*% (B0_inv %*% b0 + 1/sigma2 * t(X_star) %*% y_star)
-  Bn = solve(B0_inv + 1/sigma2 * t(X_star) %*% X_star)
+  Bn = solve(1/sigma2 * t(X_star) %*% X_star + 1/sigma2*B0_inv)
+  bn = Bn %*% (1/sigma2 * t(X_star)%*%y_star + 1/sigma2*B0_inv %*% b0)
   
+  ## bn/Bn == Bn_test/bn_test, check!
   ## block draw betas:
   res[i,1:p] <- mvtnorm::rmvnorm(1, bn, Bn)
    
@@ -731,3 +732,4 @@ The fit does not really improve when we use the negative-binomial model, so over
 - Serial correlation -> correctly estimated?
 - Why do we assume that the betas are all independent of each other?
 - z_star, B0_star ... sigma^2 or sigma?
+- How do we know that we can simply use the N(.,.) formula for the betas again for rho? 
