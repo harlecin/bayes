@@ -298,9 +298,8 @@ parameters {
 }
 model {  
   sigma ~ inv_gamma(c0, C0);
-  beta[1] ~ normal(b0_mu, sigma*B0_diag);        // intercept
-  for(i in 2:K) 
-    beta[i] ~ normal(b0_mu, sigma*B0_diag);      // coefficients regressors
+
+  beta ~ normal(b0_mu, sigma*B0_diag);      // coefficients regressors
 
   y ~ normal(X * beta, sigma);
 }
@@ -566,30 +565,27 @@ data {
 parameters {
   vector[K] beta;                          //regression parameters - column vector by default
   real<lower=0> sigma;                     //standard deviation
-  real<lower = -1, upper = 1> rho;         //correlation coefficient error term
+  real<lower=-1, upper=1> rho;             //correlation coefficient error term
 }
 model {  
-  real error;
+  real u;
   real rho_scaled;
   sigma ~ inv_gamma(c0, C0);
-  rho ~ beta(4, 2);                      // so that scaled beta is centered at roughly 0.5
+  rho ~ normal(p0, P0);                    
+
+  u = 0;
   
-  rho_scaled = 2*rho - 1;                // scaling beta to live on (-1, 1)
-  error = 0;
-  
-  beta[1] ~ normal(b0_mu, sigma*B0_diag);        // intercept
-  for(i in 2:K) 
-    beta[i] ~ normal(b0_mu, sigma*B0_diag);      // coefficients regressors
+  beta ~ normal(b0_mu, B0_diag);          // coefficients regressors
   
   for(n in 1:N) {
-    y[n] ~ normal(X[n]*beta + error, sigma);      //if a is a matrix, a[m] picks out row m of that matrix
+    y[n] ~ normal(X[n]*beta + u, sigma);      //if a is a matrix, a[m] picks out row m of that matrix
     
-    error = rho_scaled * (y[n] - (X[n]*beta));
+    u = rho * (y[n] - (X[n]*beta));
   }
 }
 ```
 
-After defining the model, we need to pass our parameters and data to actually sample from it:
+Running the model gives us:
 ```{r stan model fitting serial correlation errors}
 # Create model matrix for Stan
 X = model.matrix(~ PetrolPrice + VanKilled + law + month + time_index, data = data_seatbelts)
@@ -598,25 +594,27 @@ N = nrow(data_seatbelts)
 K = ncol(X)
 
 model_extended_vanilla = sampling(extended_vanilla_regression, data = list(N = N, K = K, y = y, X = X, 
-                                                              B0_diag = 1000, b0_mu = 0, C0 = 1, c0 = 1),
+                                                              B0_diag = 1000, b0_mu = 0, 
+                                                              C0 = 0.1, c0 = 0.1,
+                                                              p0 = 0, P0 = 1),
                               chains = 1, cores = 2, iter = 10000, seed = 20170711, 
                               control = list(max_treedepth = 10)
                               )
-```
-```{r summary extended model}
+
 broom::tidyMCMC(model_extended_vanilla, conf.int = T)
 ```
+The estimates are more or less the same as before so our Stan model should be fine. 
 
-It turns out that rho is actually quite high with a value of around 0.85. So there is indeed quite some serial correlation in the errors.
-```{r}
+```{r, message=0}
 # shinystan::launch_shinystan(model_extended_vanilla)
 traceplot(model_extended_vanilla, pars = c("beta[4]", "rho")) +
   theme_hc() +
+  scale_color_manual(values=c("#CC6666")) +
   ggtitle("Traceplots",
           "No apparent convergence issues")
 ```
 
-Both chains seem to mix well. So convergence should be fine. However, the MA(1) term is markedly smaller than in the Bayesian setting and even changing the prior to put more weight on parameter values around 0.47 does not change that. This is definitely worth looking into more closely. Other than that, the findings are pretty similar. Except for the PetrolPrice coefficient and the MA(1) term, all coefficients are about the same.
+Both chains seem to mix well. So convergence should be fine. Almost all sample points drawn for the LAW coefficient are below 0 so that strengthens our belief that the law did have a positive effect. The distribution of the parameter $\rho$ is rather wide, suggesting quite some uncertainty, but it is clearly not zero.
 
 In the next section, we are going to explore count models and start off with the Poission model:
 
@@ -655,14 +653,12 @@ model_glm_ext = stan_glm(formula = DriversKilled ~ PetrolPrice + VanKilled + law
 
 summary(model_glm_ext)
 ```
-While the seatbelt law still has the expected sign and magnitude, eABS and aribag are not showing any effect (or even a slightly positive one?).
-```{r cound regression in-sample fit}
-y_rep = posterior_predict(model_glm_ext)
-dim(y_rep)
-```
+While the seatbelt law still has the expected sign and magnitude, eABS and aribag are not showing any effect (or even a slightly positive one?). One possible explanation for the missing effect of eABS and airbags is that it takes time for new cars that actually have these safety features to be adopted by consumers.
 
-We got `r dim(y_rep)[1]` simulated points for each observation, in our case 192. Let's do some plots:
+Let's do some plots:
 ```{r count diagnostic plots}
+y_rep = posterior_predict(model_glm_ext)
+
 data_plot = as.data.frame(y_rep) %>%
   tidyr::gather(., key = index, value = val, 1:192) %>%
   mutate(index = as.numeric(index)) %>%
@@ -691,62 +687,6 @@ print(paste0("MLAR = ", mean(log(pred/actual))))
 ```
 
 It appears that the prediction error is larger when we use the count model as compared to the vanilla Bayes model before.
-
-Maybe a negative-binomial model performs better?
-```{r negative binomial with airbag + abs}
-model_glm_negb = stan_glm(formula = DriversKilled ~ PetrolPrice + VanKilled + law + 
-                           eABS + airbag +  month + time_index, offset = log(kms),
-                      data = data_seatbelts,
-                      family = "neg_binomial_2",
-                      prior = cauchy(0,2.5),
-                      prior_intercept = cauchy(0,10),
-                      adapt_delta = 0.98,
-                      chains = 2,
-                      cores = 2,
-                      seed = 20170711
-                      )
-
-summary(model_glm_negb)
-```
-```{r negb regression in-sample fit}
-y_rep = posterior_predict(model_glm_negb)
-dim(y_rep)
-```
-
-```{r diagnostic plots negb}
-data_plot = as.data.frame(y_rep) %>%
-  tidyr::gather(., key = index, value = val, 1:192) %>%
-  mutate(index = as.numeric(index)) %>%
-  group_by(index) %>%
-  summarise(Q0.01 = quantile(val, probs = 0.01),
-            mean = mean(val),
-            Q0.99 = quantile(val, probs = 0.99)
-            )
-
-
-ggplot(data_plot) +
-  ## in-sample prediction
-  geom_ribbon(aes(x = index, ymin = Q0.01, ymax = Q0.99), fill = "lightblue") +
-  geom_line(aes(x = index, y = mean), col = "blue") +
-  ## actual series
-  geom_line(data = data_seatbelts, aes(x = time_index, y = DriversKilled)) +
-  ggtitle("Posterior mean (blue) tracks actual series (black) closely",
-          "Ribbon shows Q0.01 - Q0.99 credible interval")
-```
-
-```{r accuracy stats negb regression}
-pred = data_plot$mean
-actual = with(data_seatbelts, DriversKilled)
-print(paste0("RMSE = ", sqrt(mean((pred - actual)^2))))
-print(paste0("MAPE = ", mean( abs((pred - actual)/actual))))
-print(paste0("MLAR = ", mean(log(pred/actual))))
-```
-
-The fit does not really improve when we use the negative-binomial model, so overdispersion does not seem to be an issue, which makes intuitive sense just by looking at the plots.
-
-### Sensitivity analysis
-#### Likelihood + Prior + Posterior plots
-#### Different priors
 
 ### Shrinkage priors
 
