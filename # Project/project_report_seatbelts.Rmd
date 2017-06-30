@@ -65,14 +65,6 @@ skim(data_seatbelts)
 ```
 
 
-Last, but not least, we split our data set into a pre- and posttreatment phase:
-```{r split data into pre- and post-treatment}
-data_pretreat = data_seatbelts %>%
-  filter(law != 1)
-
-data_treat = data_seatbelts %>%
-  filter(law == 1)
-```
 ## Some graphs
 
 Before we start the analysis, let's take a look at the data:
@@ -687,6 +679,43 @@ print(paste0("MLAR = ", mean(log(pred/actual))))
 ```
 
 It appears that the prediction error is larger when we use the count model as compared to the vanilla Bayes model before.
+
+## Bayesian structural time series models
+In this section we will use yet another approach to check whether the requirement to wear seatbelts helped reduce driver deaths.
+
+Let's begin by splitting our data set into a pre- and posttreatment phase:
+```{r split data into pre- and post-treatment}
+data_pretreat = data_seatbelts %>%
+  filter(law != 1)
+
+data_treat = data_seatbelts %>%
+  filter(law == 1)
+```
+
+```{r prophet}
+data_prophet = data_pretreat %>%
+  rename(y = DriversKilled,
+         ds = index)
+
+data_prophet_treat = data_treat %>%
+  rename(y = DriversKilled,
+         ds = index)
+
+pred_prophet = prophet::prophet(data_prophet)
+treat_prophet = prophet::prophet(data_prophet_treat)
+
+data_future_forecast = prophet::make_future_dataframe(pred_prophet, periods = 669+31)
+forecast_prophet = predict(pred_prophet, data_future_forecast)
+
+#MAPE = treat_prophet$history$y - forecast_prophet
+plot(pred_prophet, forecast_prophet) +
+  geom_line(data = pred_prophet$history, aes(x = ds, y = y)) +
+  geom_line(data = treat_prophet$history, aes(x = ds, y = y))
+```
+```{r prophet components}
+prophet::prophet_plot_components(pred_prophet, forecast_prophet)
+```
+
 
 ### Shrinkage priors
 
