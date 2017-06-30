@@ -127,7 +127,7 @@ It can be shown that the full conditional distributions of $\beta$ and $\sigma$ 
 
 - $\beta|\textbf{y}, \sigma^2 \sim \mathcal{N}(b_n, B_n)$ with  
   $$\begin{align*}
-  B_n &= (\frac{1}{\sigma^2}X'X+B_0^{-1})^{-1}\\
+  B_n &= (\frac{1}{\sigma^2}X'X+\frac{1}{\sigma^2}B_0^{-1})^{-1}\\
   b_n &= B_n (\frac{1}{\sigma^2}X'y+B_0^{-1}b_0)
   \end{align*}$$
 - $\sigma^2|\textbf{y}, \beta \sim \mathcal{c_n, C_n}$ with  
@@ -162,7 +162,13 @@ gibbs_nig <- function(y, X, B0_diag = 10^2, b0_mu = 0, c0 = 1, C0 = 1) {
   
   ## precalculating values
   B0_inv = solve(B0)
-  
+  ### (X'X+B0_inv)^(-1)
+  pre1 = solve(crossprod(X) + B0_inv)
+
+  ### (X'y + B0_inv*b0)
+  pre2 = t(X) %*% y + B0_inv %*% b0
+ 
+  ### cn = c0 + n/2 + p/2
   cn = c0 + n/2 + p/2
   
   ## sampling steps
@@ -171,8 +177,8 @@ gibbs_nig <- function(y, X, B0_diag = 10^2, b0_mu = 0, c0 = 1, C0 = 1) {
    #if (i%%100 == 0) cat("Iteration", i, "done.\n")
    
    ## beta sampling
-    Bn = solve(1/res[i-1, p+1] * (t(X) %*% X) + B0_inv)
-    bn = Bn %*%  (1/res[i-1, p+1] * t(X) %*% y + B0_inv %*% b0)
+    Bn = res[i-1, p+1] * pre1
+    bn = Bn %*% (pre2/res[i-1,p+1])
    ## block draw betas:
    res[i,1:p] <- mvtnorm::rmvnorm(1, bn, Bn)
    
@@ -418,7 +424,33 @@ This suggests that our Gibbs sampler should look like this:
 2. Afterwards, draw $\rho$ conditional on $\beta$ and $\sigma^2$
 3. Finally, conditional on $\beta$ and $\rho$, draw $\sigma$
 
-**attention: sampler assumes time-series is going from 1 to last vector entry!**
+For the following hand-coded Gibbs sampler we assume the following model:
+
+- observation equation (aka likelihood): $\textbf{y}|\beta, \rho, \sigma \sim \mathcal{N}(\textbf{X}\beta + \rho u_{t-1}, \sigma^2\textbf{I})$
+- prior distributions: $\beta \sim \mathcal{N}(\textbf{b}_0, \textbf{B}_0)$, $\rho \sim \mathcal{N}(p_n, P_n)$ and $\sigma^2 \sim \mathcal{IG}(c_0, C_0)$  
+
+**Note: This time the prior of $\beta$ does not depend on $\sigma^2$ (in contrast to previous Gibbs sampler).**
+
+- $\beta|\textbf{y}, \sigma^2, \rho \sim \mathcal{N}(b_n, B_n)$ with  
+$$\begin{align}
+B_n &= \left(\frac{1}{\sigma^2}X'^*X^* + B_0^{-1}\right)^{-1} \\
+b_n &= B_n\left(\frac{1}{\sigma^2}X'^*y^* + B_0^{-1}b_0\right)
+\end{align}$$
+- $\rho|\textbf{y}, \beta, \sigma^2 \sim \mathcal{N}(p_n, P_n)$ with  
+$$\begin{align}
+P_n &= \left(\frac{1}{\sigma^2}u_{t-1}'u_{t-1} + P_0^{-1}\right)^{-1} \\
+p_n &= P_n\left(\frac{1}{\sigma^2}u_{t-1}'u_t + P_0^{-1}p_0\right)
+\end{align}$$
+- $\sigma^2|\textbf{y}, \beta, \rho \sim \mathcal{IG}(c_n, C_n)$ with  
+  $$\begin{align*}
+  c_n &= c_0 + \frac{n}{2} + \frac{p}{2} \\
+  C_n &= C_0 + \frac{1}{2}[(y^*-X^*\beta)'(y^*-X^*\beta) + (\beta - b_0)'B_0^{-1}(\beta-b_0)]
+  \end{align*}$$  
+
+Where $y_t^* = y_t - \rho y_{t-1}$ and $X_t^* = X_t - \rho X_{t-1}$. 
+
+
+Using the same priors as in the previous Gibbs sampler would also work, but the estimates of $\rho$ would be lower on average compared to the estimates you would get when running an ARIMAX model.
 ```{r Gibbs sampler serial correlation}
 gibbs_corr_err <- function(y, X, B0_diag = 10^2, b0_mu = 0, c0 = 0.1, C0 = 0.1, p0 = 0, P0 = 1) {
   n = nrow(X)               # no. observations
@@ -452,11 +484,9 @@ gibbs_corr_err <- function(y, X, B0_diag = 10^2, b0_mu = 0, c0 = 0.1, C0 = 0.1, 
   res[1, ] = c(rep(1, p+1), 0)
   
   ## precalculating values
-    B0_inv = solve(B0)
+  B0_inv = solve(B0)
   
-  comparison = matrix(as.numeric(NA), nrow=draws+burnin+1, ncol=4)
   ## sampling steps
-  
   for (i in 2:(draws+burnin+1)) {
     ## remove serial correlation
     #i = 2
@@ -478,13 +508,13 @@ gibbs_corr_err <- function(y, X, B0_diag = 10^2, b0_mu = 0, c0 = 0.1, C0 = 0.1, 
     u = y - X %*% res[i, 1:p]
     u_L1 = head(u, -1)
   
-    z_star = solve(1/sigma2 * t(u_L1) %*% u_L1 + 1/P0)
-    p_star = z_star %*% (1/sigma2 * t(u_L1) %*% u[-1] + 1/P0 * p0)
+    Pn = solve(1/sigma2 * t(u_L1) %*% u_L1 + 1/P0)
+    pn = Pn %*% (1/sigma2 * t(u_L1) %*% u[-1] + 1/P0 * p0)
     
     ## Important: we need to make sure that rho in [-1, 1]
     run = TRUE
     while(run) {
-      res[i, p+2] = rnorm(1, p_star, z_star)
+      res[i, p+2] = rnorm(1, pn, Pn)
       run = (res[i, p+2] < -1 | 1 < res[i, p+2])
     }
   
@@ -517,26 +547,26 @@ forecast::Arima (y, order=c(0, 0, 1), xreg=X_temp)
 ```
 Almost spot on:)
 
-How would this model look like in Stan?
-
-We will assume that the posterior is given by, abusing notation:
-$$p(\beta, \sigma^2, \rho|y) = \mathcal{N}(y | \beta, \sigma^2, \rho) \times \mathcal{N}(\beta|\sigma^2) \times \mathcal{IG}(\sigma^2) \times \mathcal{B}(\rho)$$
-meaning we assume that $\rho$ is independent of both $\beta$ and $\sigma$.
+How would this model look like in Stan? We use the same model specification as we did for our hand-coded sampler:
 ```{stan output.var="extended_vanilla_regression"}
 data {
   int<lower=0> N;                         //number of observations
   int<lower=0> K;                         //number of columns (i.e. regressors) in the model matrix
   matrix[N,K] X;                          //model matrix
   vector[N] y;                            //response variable
-  real<lower=0> B0_diag;                  //parameters for priors see Gibbs sampler above
+  
+  //parameters for priors see Gibbs sampler above
+  real<lower=0> B0_diag;                  
   real b0_mu;
   real C0;
   real c0;
+  real P0;
+  real p0;
 }
 parameters {
-  vector[K] beta;                         //regression parameters - column vector by default
-  real<lower=0> sigma;                    //standard deviation
-  real<lower = 0, upper = 1> rho;        //correlation coefficient error term
+  vector[K] beta;                          //regression parameters - column vector by default
+  real<lower=0> sigma;                     //standard deviation
+  real<lower = -1, upper = 1> rho;         //correlation coefficient error term
 }
 model {  
   real error;
@@ -736,3 +766,4 @@ The fit does not really improve when we use the negative-binomial model, so over
 - Why do we assume that the betas are all independent of each other?
 - z_star, B0_star ... sigma^2 or sigma?
 - How do we know that we can simply use the N(.,.) formula for the betas again for rho? 
+- Likelihood correct in serial correlation example description?
